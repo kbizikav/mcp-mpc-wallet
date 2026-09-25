@@ -9,8 +9,8 @@ use std::time::Duration;
 use alloy_primitives::{Address, B256, Signature};
 use mw_core::ApprovedDigest;
 use mw_mpc::protocol::{
-    KeyShare, PARTY_B, PartialSignature, SIGNERS_AB, address_of, combine, execution_id,
-    issue_partial, presign_party,
+    KeyShare, PARTY_A, PARTY_B, PARTY_C, PartialSignature, address_of, combine, execution_id,
+    issue_partial, presign_party, signer_index, signers_with_b,
 };
 use mw_mpc::{SignError, ThresholdSigner};
 use mw_wire::{AtoB, BtoA, Connection};
@@ -21,6 +21,21 @@ use tokio::io::{AsyncRead, AsyncWrite};
 const SIGNING_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub type AConnection<S> = Connection<S, BtoA, AtoB>;
+
+/// 署名の相手とのセッション。通常は A、復旧(B+C)のときは C。
+pub struct PeerSession<S> {
+    pub conn: AConnection<S>,
+    pub cosigner: u16,
+}
+
+impl<S> PeerSession<S> {
+    pub fn with_a(conn: AConnection<S>) -> Self {
+        Self {
+            conn,
+            cosigner: PARTY_A,
+        }
+    }
+}
 
 pub struct CggmpSigner<S> {
     share: KeyShare,
@@ -49,7 +64,7 @@ impl<S> ThresholdSigner for CggmpSigner<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    type Peer = AConnection<S>;
+    type Peer = PeerSession<S>;
 
     fn address(&self) -> Address {
         self.address
@@ -58,10 +73,16 @@ where
     async fn sign(
         &self,
         approved: ApprovedDigest,
-        peer: &mut AConnection<S>,
+        peer: &mut PeerSession<S>,
     ) -> Result<Signature, SignError> {
         if approved.key().from != self.address {
             return Err(SignError::WrongWallet);
+        }
+        if peer.cosigner != PARTY_A && peer.cosigner != PARTY_C {
+            return Err(SignError::Protocol(format!(
+                "party {} cannot co-sign with B",
+                peer.cosigner
+            )));
         }
         let signing_hash = approved.key().signing_hash;
         tokio::time::timeout(SIGNING_TIMEOUT, self.sign_with_a(signing_hash, peer))
@@ -77,8 +98,11 @@ where
     async fn sign_with_a(
         &self,
         signing_hash: B256,
-        peer: &mut AConnection<S>,
+        peer: &mut PeerSession<S>,
     ) -> Result<Signature, SignError> {
+        let signers = signers_with_b(peer.cosigner);
+        let local = signer_index(&signers, PARTY_B).expect("B is always a signer");
+        let peer = &mut peer.conn;
         let unavailable = |e: mw_wire::WireError| SignError::Unavailable(e.to_string());
 
         let mut session = [0u8; 32];
@@ -95,13 +119,13 @@ where
         let share = &self.share;
         let mut presigs = peer
             .run_mpc(
-                SIGNERS_AB.len() as u16,
-                &[1],
+                signers.len() as u16,
+                &[local],
                 |msg| BtoA::Mpc { msg },
                 AtoB::into_mpc,
                 |i, party| {
                     let eid = eid.clone();
-                    async move { presign_party(&eid, i, &SIGNERS_AB, share, party).await }
+                    async move { presign_party(&eid, i, &signers, share, party).await }
                 },
             )
             .await

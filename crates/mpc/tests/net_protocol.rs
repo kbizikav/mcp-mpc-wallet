@@ -11,6 +11,7 @@ use mw_mpc::net::run_parties;
 use mw_mpc::protocol::{
     KeyShare, PARTIES, PARTY_A, PARTY_B, PARTY_C, PregeneratedPrimes, SIGNERS_AB, address_of,
     aux_party, combine, complete_share, execution_id, issue_partial, keygen_party, presign_party,
+    sign_with_local_shares,
 };
 use rand_core::{OsRng, RngCore};
 
@@ -105,5 +106,12 @@ async fn keygen_and_sign_across_processes() {
             .unwrap(),
         address
     );
+
+    // 復旧経路: A+C(B なし)と B+C(A なし)でも署名できる
+    for pair in [[share_a, share_c], [&share_b, share_c]] {
+        let hash = keccak256(format!("recovery {}", pair[0].i));
+        let sig = sign_with_local_shares(pair, &hash).await.unwrap();
+        assert_eq!(sig.recover_address_from_prehash(&hash).unwrap(), address);
+    }
     let _ = PARTY_B;
 }

@@ -8,14 +8,16 @@ use mw_simulator::Simulator;
 use mw_wire::{AtoB, BtoA, WireError};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::signer::{AConnection, CggmpSigner};
+use mw_mpc::protocol::{PARTY_A, PARTY_C};
+
+use crate::signer::{AConnection, CggmpSigner, PeerSession};
 
 /// 1 本の接続で届く要求を順に処理する。署名済み tx は返さず、結果だけを返す。
 ///
 /// `after_request` は要求を 1 件処理するたびに呼ばれる(状態の保存に使う)。
 pub async fn serve_connection<C, Sim, L, N, K, A, S>(
     node: &JudgeNode<C, Sim, L, CggmpSigner<S>, N, K, A>,
-    mut conn: AConnection<S>,
+    conn: AConnection<S>,
     after_request: impl Fn(),
 ) -> Result<(), WireError>
 where
@@ -27,36 +29,50 @@ where
     A: AuditSink,
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let mut session = PeerSession::with_a(conn);
     loop {
-        let msg = match conn.recv().await {
+        let msg = match session.conn.recv().await {
             Ok(msg) => msg,
             Err(WireError::Closed) => return Ok(()),
             Err(e) => return Err(e),
         };
         match msg {
             AtoB::Propose { proposal } => {
-                let outcome = node.handle_proposal(proposal, &mut conn).await;
+                let outcome = node.handle_proposal(proposal, &mut session).await;
                 after_request();
-                conn.send(&BtoA::Outcome { outcome }).await?;
+                session.conn.send(&BtoA::Outcome { outcome }).await?;
             }
             AtoB::Resume { wallet, request_id } => {
-                let outcome = node.resume(wallet, request_id, &mut conn).await;
+                let outcome = node.resume(wallet, request_id, &mut session).await;
                 after_request();
-                conn.send(&BtoA::Outcome { outcome }).await?;
+                session.conn.send(&BtoA::Outcome { outcome }).await?;
+            }
+            AtoB::Recover {
+                signed,
+                unsigned_tx,
+            } => {
+                // 復旧では、相手は C のシェアで署名に参加する
+                session.cosigner = PARTY_C;
+                let outcome = node.recover(signed, unsigned_tx, &mut session).await;
+                session.cosigner = PARTY_A;
+                after_request();
+                session.conn.send(&BtoA::Outcome { outcome }).await?;
             }
             AtoB::User { request } => {
                 let response = node.handle_user_request(request).await;
                 after_request();
-                conn.send(&BtoA::User { response }).await?;
+                session.conn.send(&BtoA::User { response }).await?;
             }
             // 中断した署名セッションの残り。読み捨てる
             AtoB::Decline { .. } | AtoB::PartialSignature { .. } | AtoB::Mpc { .. } => {}
             other => {
                 let message = format!("unexpected message: {}", kind(&other));
-                conn.send(&BtoA::Error {
-                    message: message.clone(),
-                })
-                .await?;
+                session
+                    .conn
+                    .send(&BtoA::Error {
+                        message: message.clone(),
+                    })
+                    .await?;
                 return Err(WireError::Unexpected(message));
             }
         }
@@ -68,6 +84,7 @@ fn kind(msg: &AtoB) -> &'static str {
         AtoB::Propose { .. } => "propose",
         AtoB::Resume { .. } => "resume",
         AtoB::User { .. } => "user",
+        AtoB::Recover { .. } => "recover",
         AtoB::Keygen { .. } => "keygen",
         AtoB::KeygenResult { .. } => "keygen_result",
         AtoB::Mpc { .. } => "mpc",

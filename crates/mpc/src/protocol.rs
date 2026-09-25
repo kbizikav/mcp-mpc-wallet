@@ -9,7 +9,7 @@ use cggmp21::round_based::Mpc;
 use cggmp21::security_level::SecurityLevel128;
 use cggmp21::supported_curves::Secp256k1;
 use cggmp21::{DataToSign, ExecutionId};
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 
 pub type Curve = Secp256k1;
 pub type KeyShare = cggmp21::KeyShare<Curve, SecurityLevel128>;
@@ -27,6 +27,21 @@ pub const PARTIES: u16 = 3;
 pub const THRESHOLD: u16 = 2;
 /// 通常の署名は A と B で行う。signer index 0 = A、1 = B
 pub const SIGNERS_AB: [u16; 2] = [PARTY_A, PARTY_B];
+
+/// B と、相手(A または C)で署名するときの署名者の組(鍵生成時の番号の昇順)。
+pub fn signers_with_b(cosigner: u16) -> [u16; 2] {
+    let mut signers = [cosigner, PARTY_B];
+    signers.sort_unstable();
+    signers
+}
+
+/// `signers` の中での `party` の位置(signer index)。
+pub fn signer_index(signers: &[u16], party: u16) -> Option<u16> {
+    signers
+        .iter()
+        .position(|&p| p == party)
+        .and_then(|i| u16::try_from(i).ok())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
@@ -141,4 +156,45 @@ pub fn combine(
         (candidate.recover_address_from_prehash(signing_hash).ok() == Some(address))
             .then_some(candidate)
     })
+}
+
+/// 手元にある 2 つのシェアだけで署名する(緊急時の A+C などの復旧経路用)。
+///
+/// 両方のシェアを同じプロセスに置くので、通常の署名には使わないこと。
+pub async fn sign_with_local_shares(
+    shares: [&KeyShare; 2],
+    signing_hash: &B256,
+) -> Result<Signature, ProtocolError> {
+    let mut signers = [shares[0].i, shares[1].i];
+    signers.sort_unstable();
+    let ordered: Vec<&KeyShare> = signers
+        .iter()
+        .map(|i| {
+            *shares
+                .iter()
+                .find(|s| s.i == *i)
+                .expect("signer index comes from these shares")
+        })
+        .collect();
+
+    let mut session = [0u8; 32];
+    OsRng.fill_bytes(&mut session);
+    let eid = execution_id(&session, "local-presign");
+    // 相手はいないので、ネットワーク側のチャネルは使わない(送り手は最後まで保持する)
+    let (net_out, _unused_out) = futures::channel::mpsc::unbounded();
+    let (_keep_open, net_in) = futures::channel::mpsc::unbounded();
+    let presigs = crate::net::run_parties(2, &[0, 1], net_out, net_in, |i, party| {
+        let eid = eid.clone();
+        let share = ordered[usize::from(i)];
+        async move { presign_party(&eid, i, &signers, share, party).await }
+    })
+    .await
+    .map_err(|e| ProtocolError::Presign(e.to_string()))?;
+
+    let mut partials = Vec::with_capacity(2);
+    for presig in presigs {
+        partials.push(issue_partial(presig?, signing_hash));
+    }
+    combine(&partials, signing_hash, &shares[0].shared_public_key)
+        .ok_or_else(|| ProtocolError::Presign("combined signature is invalid".into()))
 }

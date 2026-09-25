@@ -4,12 +4,14 @@
 //!   (不変条件 6)。署名カウンタを保存して、同じ assertion の再送を拒否する。
 //! - ユーザーが承認した tx も、承認時点で nonce を確かめ、承認から 5 分以内に
 //!   A が再開したときにだけ署名する(不変条件 3, 4)。
+//! - A の端末をなくしたときは、パスキーで承認した復旧 tx を B+C で署名する。
 
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, Bytes, keccak256};
 use mw_audit::{AuditRecord, AuditSink};
-use mw_chain::ChainClient;
+use mw_chain::{ChainClient, decode_unsigned};
 use mw_core::{
-    APPROVAL_TTL_SECS, AgentOutcome, Approval, ApprovalOrigin, CoarseReason, Policy, Verdict,
+    APPROVAL_TTL_SECS, AgentOutcome, Approval, ApprovalOrigin, CoarseReason, Policy,
+    SigningRequestKey, Verdict,
 };
 use mw_judge::LlmClient;
 use mw_mpc::ThresholdSigner;
@@ -22,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::guard::{Admission, FreezeState};
 use crate::notify::{UserNotice, UserNotifier};
-use crate::pipeline::PENDING_TTL_SECS;
+use crate::pipeline::{PENDING_TTL_SECS, Prepared};
 use crate::{Clock, JudgeNode};
 
 /// 永続化するユーザー関連の状態。
@@ -53,6 +55,8 @@ pub enum UserError {
     StaleRequest,
     #[error("the signed request is too old")]
     StaleOperation,
+    #[error("this operation must be sent through the recovery flow")]
+    WrongFlow,
     #[error("unfreeze: {0}")]
     Unfreeze(#[from] crate::guard::UnfreezeError),
     #[error("chain: {0}")]
@@ -192,6 +196,10 @@ where
         signed: SignedUserOperation,
     ) -> Result<UserResponse, UserError> {
         let _serial = self.serial.lock().await;
+        // 署名カウンタを進める前に、この経路で扱う操作かを確かめる
+        if let UserOperation::ApproveRecovery { .. } = signed.operation {
+            return Err(UserError::WrongFlow);
+        }
         self.verify_passkey(&signed)?;
         let now = self.parts.clock.now_unix();
         match signed.operation {
@@ -225,6 +233,97 @@ where
                 Ok(UserResponse::PendingRequests {
                     requests: self.pending_views(now),
                 })
+            }
+            UserOperation::ApproveRecovery { .. } => Err(UserError::WrongFlow),
+        }
+    }
+
+    /// A の端末をなくしたときの復旧。パスキーで承認された tx を、`peer`(C)と署名して送信する。
+    ///
+    /// 凍結中でも使える(緊急時には先に凍結しているはずなので)。
+    pub async fn recover(
+        &self,
+        signed: SignedUserOperation,
+        unsigned_tx: Bytes,
+        peer: &mut T::Peer,
+    ) -> AgentOutcome {
+        let _serial = self.serial.lock().await;
+        let reject = |reason| AgentOutcome::Rejected { reason };
+        let UserOperation::ApproveRecovery {
+            wallet,
+            signing_hash,
+        } = signed.operation
+        else {
+            return reject(CoarseReason::InvalidRequest);
+        };
+        if wallet != self.wallet() {
+            return reject(CoarseReason::InvalidRequest);
+        }
+        if let Err(e) = self.verify_passkey(&signed) {
+            self.parts.notifier.notify(UserNotice::Rejected {
+                wallet,
+                request_id: signing_hash,
+                reasons: vec![format!("recovery refused: {e}")],
+            });
+            return reject(CoarseReason::PolicyViolation);
+        }
+
+        let Ok(decoded) = decode_unsigned(&unsigned_tx) else {
+            return reject(CoarseReason::InvalidRequest);
+        };
+        if decoded.signing_hash != signing_hash || decoded.tx.chain_id != self.config.chain_id {
+            return reject(CoarseReason::InvalidRequest);
+        }
+        let Ok((witness, pending_nonce)) = self.time_and_nonce(wallet).await else {
+            return reject(CoarseReason::Unavailable);
+        };
+        if decoded.tx.nonce != pending_nonce {
+            return reject(CoarseReason::InvalidRequest);
+        }
+        let key = SigningRequestKey {
+            chain_id: decoded.tx.chain_id,
+            from: wallet,
+            nonce: decoded.tx.nonce,
+            signing_hash,
+            payload_hash: keccak256(&decoded.payload),
+        };
+        let recorded = self.append_audit(AuditRecord {
+            wallet,
+            proposal_hash: signing_hash,
+            input_summary: String::new(),
+            policy_hash: None,
+            simulation_hash: None,
+            verdict: Verdict::Approve,
+            reasons: vec!["recovery (B+C) approved by the owner's passkey".into()],
+        });
+        let inserted = self.approvals.insert(Approval {
+            key,
+            issued: witness,
+            origin: ApprovalOrigin::User,
+        });
+        if recorded.is_err() || inserted.is_err() {
+            return reject(CoarseReason::Unavailable);
+        }
+
+        let prepared = Prepared {
+            decoded,
+            key,
+            witness,
+        };
+        match self.redeem_and_submit(wallet, prepared, peer).await {
+            Ok(tx_hash) => {
+                self.parts
+                    .notifier
+                    .notify(UserNotice::Submitted { wallet, tx_hash });
+                AgentOutcome::Submitted { tx_hash }
+            }
+            Err(e) => {
+                self.parts.notifier.notify(UserNotice::SubmissionFailed {
+                    wallet,
+                    request_id: signing_hash,
+                    error: e.to_string(),
+                });
+                reject(CoarseReason::Unavailable)
             }
         }
     }

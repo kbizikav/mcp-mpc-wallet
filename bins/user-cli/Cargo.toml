@@ -13,6 +13,9 @@ path = "src/main.rs"
 [dependencies]
 alloy-primitives.workspace = true
 anyhow.workspace = true
+mw-chain.workspace = true
+mw-mpc.workspace = true
+secrecy.workspace = true
 clap.workspace = true
 mw-core.workspace = true
 mw-node-a.workspace = true

@@ -2,13 +2,14 @@
 
 use std::sync::Arc;
 
-use alloy_primitives::{Address, B256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, keccak256};
 use mw_core::{AgentOutcome, Proposal};
 use mw_mpc::protocol::{
-    KeyShare, PARTIES, PARTY_A, PARTY_C, PregeneratedPrimes, ProtocolError, SIGNERS_AB, address_of,
-    aux_party, complete_share, execution_id, issue_partial, keygen_party, presign_party,
+    KeyShare, PARTIES, PARTY_A, PARTY_C, PregeneratedPrimes, ProtocolError, address_of, aux_party,
+    complete_share, execution_id, issue_partial, keygen_party, presign_party, signer_index,
+    signers_with_b,
 };
-use mw_policy::{UserRequest, UserResponse};
+use mw_policy::{SignedUserOperation, UserRequest, UserResponse};
 use mw_wire::{AtoB, BtoA, Connection, WireError};
 use rand_core::{OsRng, RngCore};
 use rustls::ClientConfig;
@@ -186,15 +187,41 @@ where
     }
 }
 
+/// C のシェアで B と署名し、全額を移す復旧 tx を送る(A の端末をなくしたとき)。
+///
+/// `signed` は復旧 tx の signing hash へのパスキー署名(`ApproveRecovery`)。
+pub async fn recover<S>(
+    conn: &mut BConnection<S>,
+    share_c: &KeyShare,
+    signed: SignedUserOperation,
+    unsigned_tx: Bytes,
+) -> Result<AgentOutcome, SessionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let expected_hash = keccak256(&unsigned_tx);
+    conn.send(&AtoB::Recover {
+        signed,
+        unsigned_tx,
+    })
+    .await?;
+    cosign_until_outcome(conn, share_c, expected_hash).await
+}
+
 /// B の署名要求のうち、`expected_hash` へのもの 1 回だけに応じ、最終結果を待つ。
+///
+/// `share` は A か C のシェア。B と組む署名者の組の中での自分の位置で presign に参加する。
 async fn cosign_until_outcome<S>(
     conn: &mut BConnection<S>,
-    share_a: &KeyShare,
+    share: &KeyShare,
     expected_hash: B256,
 ) -> Result<AgentOutcome, SessionError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    let signers = signers_with_b(share.i);
+    let local = signer_index(&signers, share.i)
+        .ok_or_else(|| SessionError::Unexpected("share cannot co-sign with B".into()))?;
     let mut signed = false;
     loop {
         match conn.recv().await? {
@@ -213,13 +240,13 @@ where
                 let eid = execution_id(&session.0, "presign");
                 let presig = conn
                     .run_mpc(
-                        SIGNERS_AB.len() as u16,
-                        &[0],
+                        signers.len() as u16,
+                        &[local],
                         |msg| AtoB::Mpc { msg },
                         BtoA::into_mpc,
                         |i, party| {
                             let eid = eid.clone();
-                            async move { presign_party(&eid, i, &SIGNERS_AB, share_a, party).await }
+                            async move { presign_party(&eid, i, &signers, share, party).await }
                         },
                     )
                     .await?

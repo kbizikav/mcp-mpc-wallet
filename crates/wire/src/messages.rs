@@ -1,7 +1,7 @@
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, Bytes};
 use mw_core::{AgentOutcome, Proposal};
 use mw_mpc::net::WireMsg;
-use mw_policy::{UserRequest, UserResponse};
+use mw_policy::{SignedUserOperation, UserRequest, UserResponse};
 use serde::{Deserialize, Serialize};
 
 /// A(ユーザーの PC)から B(判定ノード)へ。
@@ -20,6 +20,11 @@ pub enum AtoB {
     /// ユーザーアプリからの操作(方針・承認・凍結など)
     User {
         request: UserRequest,
+    },
+    /// A の端末をなくしたときの復旧。送り手は C のシェアで署名に参加する
+    Recover {
+        signed: SignedUserOperation,
+        unsigned_tx: Bytes,
     },
     /// B のシェアがまだないときだけ受け付ける鍵生成
     Keygen {

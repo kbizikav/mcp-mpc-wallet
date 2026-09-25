@@ -263,6 +263,9 @@ async fn keygen_propose_sign_and_submit() {
     // 方針なし → 要確認 → パスキーで承認 → A が再開して送信
     user_approval_over_the_wire(share_b.clone(), &share_a).await;
 
+    // A をなくしたとき: B+C で復旧
+    recovery_with_b_and_c(share_b.clone(), &share_c).await;
+
     // 拒否される提案: 署名要求は来ず、何も送信されない
     let node = self::node(share_b, "reject");
     let (outcome, _) = run_proposal(&node, &share_a, proposal(wallet)).await;
@@ -365,6 +368,52 @@ async fn user_approval_over_the_wire(share_b: KeyShare, share_a: &KeyShare) {
 
     let outcome = with_b(&node, async |c| {
         resume(c, share_a, wallet, request_id).await
+    })
+    .await
+    .unwrap();
+    let AgentOutcome::Submitted { tx_hash } = outcome else {
+        panic!("expected submission, got {outcome:?}");
+    };
+    let sent = node.parts().chain.sent();
+    assert_eq!(sent.len(), 1);
+    let envelope = TxEnvelope::decode_2718(&mut sent[0].as_ref()).unwrap();
+    assert_eq!(*envelope.tx_hash(), tx_hash);
+    assert_eq!(envelope.recover_signer().unwrap(), wallet);
+}
+
+/// A の端末をなくしたとき: 凍結中でも、パスキー承認 + C のシェアで B と署名して全額を移せる。
+async fn recovery_with_b_and_c(share_b: KeyShare, share_c: &KeyShare) {
+    let node = node_with(share_b, "reject", false);
+    let wallet = node.wallet();
+    let mut passkey = SoftwarePasskey::generate(DEFAULT_RP_ID, DEFAULT_ORIGIN);
+    node.register_passkey(wallet, passkey.registration())
+        .unwrap();
+    node.freeze(wallet);
+
+    let unsigned = proposal(wallet).unsigned_tx;
+    let signing_hash = alloy_primitives::keccak256(&unsigned);
+
+    // 別の tx への承認では通らない
+    let wrong = passkey.sign(UserOperation::ApproveRecovery {
+        wallet,
+        signing_hash: B256::repeat_byte(0xee),
+    });
+    let outcome = with_b(&node, async |c| {
+        mw_node_a::session::recover(c, share_c, wrong, unsigned.clone()).await
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(outcome, AgentOutcome::Rejected { .. }),
+        "{outcome:?}"
+    );
+
+    let signed = passkey.sign(UserOperation::ApproveRecovery {
+        wallet,
+        signing_hash,
+    });
+    let outcome = with_b(&node, async |c| {
+        mw_node_a::session::recover(c, share_c, signed, unsigned.clone()).await
     })
     .await
     .unwrap();

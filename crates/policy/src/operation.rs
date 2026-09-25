@@ -18,6 +18,8 @@ pub enum UserOperation {
     Unfreeze { wallet: Address, freeze_epoch: u64 },
     /// 保留中の要求の詳細を見る。`issued_at` が古すぎるものは受け付けない
     ListPending { wallet: Address, issued_at: u64 },
+    /// A をなくしたときに、B+C で署名する復旧 tx を承認する(tx の signing hash に束縛)
+    ApproveRecovery { wallet: Address, signing_hash: B256 },
 }
 
 impl UserOperation {
@@ -26,7 +28,8 @@ impl UserOperation {
             UserOperation::SetPolicy { policy } => policy.wallet,
             UserOperation::ApproveRequest { wallet, .. }
             | UserOperation::Unfreeze { wallet, .. }
-            | UserOperation::ListPending { wallet, .. } => *wallet,
+            | UserOperation::ListPending { wallet, .. }
+            | UserOperation::ApproveRecovery { wallet, .. } => *wallet,
         }
     }
 
