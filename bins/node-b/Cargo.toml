@@ -22,7 +22,7 @@ mw-mpc.workspace = true
 mw-node-b.workspace = true
 mw-policy.workspace = true
 mw-simulator.workspace = true
-mw-tee = { workspace = true, features = ["insecure-mock"] }
+mw-tee = { workspace = true, features = ["insecure-mock", "nitro"] }
 mw-wire.workspace = true
 rand_core.workspace = true
 secrecy.workspace = true
@@ -31,6 +31,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
 tokio-rustls.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-vsock = "0.7"
 
 [dev-dependencies]
 mw-node-a.workspace = true

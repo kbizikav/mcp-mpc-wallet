@@ -1,6 +1,7 @@
 //! 判定ノード B のサーバ: A との mTLS 接続、鍵生成、cggmp21 による閾値署名。
 
 pub mod keygen;
+pub mod net;
 pub mod notifier;
 pub mod server;
 pub mod signer;

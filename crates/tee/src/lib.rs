@@ -13,6 +13,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 #[cfg(feature = "insecure-mock")]
 pub mod mock;
 
+#[cfg(feature = "nitro")]
+pub mod kms;
+
 #[derive(Debug, thiserror::Error)]
 pub enum TeeError {
     #[error("sealed secret not found: {0}")]
@@ -27,6 +30,7 @@ pub enum TeeError {
 pub trait SealedStorage: Send + Sync {
     fn seal(&self, label: &str, secret: &SecretSlice<u8>) -> Result<(), TeeError>;
     fn unseal(&self, label: &str) -> Result<SecretSlice<u8>, TeeError>;
+    fn exists(&self, label: &str) -> bool;
 }
 
 /// 検証前の attestation document。

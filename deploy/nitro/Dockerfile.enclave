@@ -1,0 +1,22 @@
+# 判定ノード B の enclave イメージ。
+#
+# kmstool/ には aws-nitro-enclaves-sdk-c で作った kmstool_enclave_cli と libnsm.so を置いておく
+# (build-kmstool.sh)。API キーなどの秘密はイメージに入れない(起動時に親から vsock で渡す)。
+
+FROM amazonlinux:2023 AS build
+RUN dnf install -y gcc gcc-c++ make cmake clang git m4 perl diffutils tar gzip xz \
+    && dnf clean all
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.95.0
+ENV PATH=/root/.cargo/bin:$PATH
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked -p mw-node-b-server --bin mw-node-b
+
+FROM amazonlinux:2023-minimal
+RUN microdnf install -y socat iproute tar gzip && microdnf clean all
+COPY --from=build /src/target/release/mw-node-b /app/mw-node-b
+COPY deploy/nitro/kmstool/kmstool_enclave_cli /app/kmstool_enclave_cli
+COPY deploy/nitro/kmstool/libnsm.so /usr/lib64/libnsm.so
+COPY deploy/nitro/enclave-run.sh /app/run.sh
+RUN chmod 755 /app/run.sh /app/kmstool_enclave_cli
+CMD ["/app/run.sh"]

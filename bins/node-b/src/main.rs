@@ -2,15 +2,14 @@
 //!
 //! ```text
 //! mw-node-b pki    --node-b-dir <dir> --node-a-dir <dir>   # デプロイ用の CA と証明書を作る
-//! mw-node-b keygen --listen <addr> --tls-dir <dir> --data-dir <dir>
+//! mw-node-b keygen --listen <tcp:addr|vsock:port> --tls-dir <dir> --data-dir <dir>
 //! mw-node-b register-passkey --data-dir <dir> --passkey <registration.json>   # B を止めて実行
-//! mw-node-b serve  --listen <addr> --tls-dir <dir> --data-dir <dir>
+//! mw-node-b serve  --listen <tcp:addr|vsock:port> --tls-dir <dir> --data-dir <dir>
 //! ```
 //!
 //! TEE なしで動く開発用の構成。B のシェアは `<data-dir>/sealed` に平文で置かれる。
 //! パスキー・方針・凍結状態は `<data-dir>/user-state.json` に保存する。
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -26,16 +25,17 @@ use mw_node_b::{
     UserStateSnapshot,
 };
 use mw_node_b_server::keygen::run_keygen;
+use mw_node_b_server::net::{Listen, RawListener, RawStream};
 use mw_node_b_server::notifier::JsonlNotifier;
 use mw_node_b_server::server::serve_connection;
 use mw_node_b_server::{CggmpSigner, SHARE_LABEL};
 use mw_simulator::{TenderlyConfig, TenderlySimulator};
 use mw_tee::SealedStorage;
+use mw_tee::kms::{KmsCredentials, KmsToolSealedStorage};
 use mw_tee::mock::InsecureFileStorage;
 use mw_wire::Connection;
 use mw_wire::tls::{read_pem, server_config};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
-use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 
@@ -62,16 +62,20 @@ enum Command {
     /// A からの接続を 1 本受け付けて 2-of-3 の鍵生成を行う
     Keygen {
         #[arg(long)]
-        listen: SocketAddr,
+        listen: Listen,
         #[arg(long)]
         tls_dir: PathBuf,
         #[arg(long)]
         data_dir: PathBuf,
+        #[command(flatten)]
+        seal: SealArgs,
     },
     /// ユーザーのパスキーを登録する(初回だけ。B を止めた状態で実行する)
     RegisterPasskey {
         #[arg(long)]
         data_dir: PathBuf,
+        #[command(flatten)]
+        seal: SealArgs,
         /// パスキーの公開情報(credential_id, public_key)の JSON
         #[arg(long)]
         passkey: PathBuf,
@@ -79,7 +83,7 @@ enum Command {
     /// 提案とユーザー操作を受け付けて判定・署名・送信する
     Serve {
         #[arg(long)]
-        listen: SocketAddr,
+        listen: Listen,
         #[arg(long)]
         tls_dir: PathBuf,
         #[arg(long)]
@@ -88,10 +92,12 @@ enum Command {
         passkey_rp_id: String,
         #[arg(long, default_value = DEFAULT_ORIGIN)]
         passkey_origin: String,
+        #[command(flatten)]
+        seal: SealArgs,
     },
 }
 
-type Stream = TlsStream<TcpStream>;
+type Stream = TlsStream<RawStream>;
 
 fn acceptor(tls_dir: &Path) -> anyhow::Result<TlsAcceptor> {
     let config = server_config(
@@ -102,8 +108,35 @@ fn acceptor(tls_dir: &Path) -> anyhow::Result<TlsAcceptor> {
     Ok(TlsAcceptor::from(config))
 }
 
-fn storage(data_dir: &Path) -> anyhow::Result<InsecureFileStorage> {
-    Ok(InsecureFileStorage::new(data_dir.join("sealed"))?)
+/// B のシェアの封印方法。`--kms-key-id` を指定すると Nitro Enclave の中で KMS を使う。
+#[derive(clap::Args, Clone)]
+struct SealArgs {
+    /// KMS キー(指定しなければ開発用に平文ファイルで保存する)
+    #[arg(long)]
+    kms_key_id: Option<String>,
+    #[arg(long, default_value = "ap-northeast-1")]
+    kms_region: String,
+    #[arg(long, default_value = "/app/kmstool_enclave_cli")]
+    kmstool: PathBuf,
+    /// 親インスタンスで KMS への vsock-proxy が待つポート
+    #[arg(long, default_value_t = 8000)]
+    kms_proxy_port: u16,
+}
+
+fn storage(data_dir: &Path, seal: &SealArgs) -> anyhow::Result<Box<dyn SealedStorage>> {
+    let dir = data_dir.join("sealed");
+    std::fs::create_dir_all(&dir)?;
+    Ok(match &seal.kms_key_id {
+        Some(key_id) => Box::new(KmsToolSealedStorage {
+            dir,
+            tool: seal.kmstool.clone(),
+            region: seal.kms_region.clone(),
+            key_id: key_id.clone(),
+            proxy_port: seal.kms_proxy_port,
+            credentials: KmsCredentials::from_env()?,
+        }),
+        None => Box::new(InsecureFileStorage::new(dir)?),
+    })
 }
 
 fn env_secret(name: &str) -> anyhow::Result<SecretString> {
@@ -116,13 +149,18 @@ fn env_var(name: &str) -> anyhow::Result<String> {
     std::env::var(name).with_context(|| format!("{name} is not set"))
 }
 
-async fn keygen(listen: SocketAddr, tls_dir: &Path, data_dir: &Path) -> anyhow::Result<()> {
-    let storage = storage(data_dir)?;
+async fn keygen(
+    listen: Listen,
+    tls_dir: &Path,
+    data_dir: &Path,
+    seal: &SealArgs,
+) -> anyhow::Result<()> {
+    let storage = storage(data_dir, seal)?;
     if storage.exists(SHARE_LABEL) {
         bail!("B already has a key share; refusing to run keygen again");
     }
     let acceptor = acceptor(tls_dir)?;
-    let listener = TcpListener::bind(listen).await?;
+    let listener = RawListener::bind(&listen).await?;
     eprintln!("waiting for A on {listen} to run keygen");
     let (tcp, peer) = listener.accept().await?;
     eprintln!("keygen with {peer}");
@@ -136,7 +174,7 @@ async fn keygen(listen: SocketAddr, tls_dir: &Path, data_dir: &Path) -> anyhow::
     Ok(())
 }
 
-fn load_share(storage: &InsecureFileStorage) -> anyhow::Result<KeyShare> {
+fn load_share(storage: &dyn SealedStorage) -> anyhow::Result<KeyShare> {
     let sealed = storage.unseal(SHARE_LABEL)?;
     Ok(serde_json::from_slice(sealed.expose_secret())?)
 }
@@ -161,8 +199,8 @@ fn save_user_state(data_dir: &Path, state: &UserStateSnapshot) -> anyhow::Result
     Ok(())
 }
 
-fn register_passkey(data_dir: &Path, passkey: &Path) -> anyhow::Result<()> {
-    let signer = CggmpSigner::<Stream>::new(load_share(&storage(data_dir)?)?)?;
+fn register_passkey(data_dir: &Path, passkey: &Path, seal: &SealArgs) -> anyhow::Result<()> {
+    let signer = CggmpSigner::<Stream>::new(load_share(&*storage(data_dir, seal)?)?)?;
     let wallet = signer.address();
     let registration: mw_policy::RegisteredPasskey =
         serde_json::from_slice(&std::fs::read(passkey)?)?;
@@ -177,13 +215,14 @@ fn register_passkey(data_dir: &Path, passkey: &Path) -> anyhow::Result<()> {
 }
 
 async fn serve(
-    listen: SocketAddr,
+    listen: Listen,
     tls_dir: &Path,
     data_dir: &Path,
     passkey_rp_id: String,
     passkey_origin: String,
+    seal: &SealArgs,
 ) -> anyhow::Result<()> {
-    let signer = CggmpSigner::<Stream>::new(load_share(&storage(data_dir)?)?)?;
+    let signer = CggmpSigner::<Stream>::new(load_share(&*storage(data_dir, seal)?)?)?;
     let wallet = signer.address();
 
     let rpc_url = SecretString::from(format!(
@@ -223,7 +262,7 @@ async fn serve(
     node.restore(&load_user_state(data_dir)?)?;
 
     let acceptor = acceptor(tls_dir)?;
-    let listener = TcpListener::bind(listen).await?;
+    let listener = RawListener::bind(&listen).await?;
     eprintln!("judge node for wallet {wallet} on chain {CHAIN_ID}, listening on {listen}");
     loop {
         let (tcp, peer) = listener.accept().await?;
@@ -269,14 +308,30 @@ async fn main() -> anyhow::Result<()> {
             listen,
             tls_dir,
             data_dir,
-        } => keygen(listen, &tls_dir, &data_dir).await,
-        Command::RegisterPasskey { data_dir, passkey } => register_passkey(&data_dir, &passkey),
+            seal,
+        } => keygen(listen, &tls_dir, &data_dir, &seal).await,
+        Command::RegisterPasskey {
+            data_dir,
+            passkey,
+            seal,
+        } => register_passkey(&data_dir, &passkey, &seal),
         Command::Serve {
             listen,
             tls_dir,
             data_dir,
             passkey_rp_id,
             passkey_origin,
-        } => serve(listen, &tls_dir, &data_dir, passkey_rp_id, passkey_origin).await,
+            seal,
+        } => {
+            serve(
+                listen,
+                &tls_dir,
+                &data_dir,
+                passkey_rp_id,
+                passkey_origin,
+                &seal,
+            )
+            .await
+        }
     }
 }

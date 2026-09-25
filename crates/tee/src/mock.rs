@@ -39,6 +39,12 @@ impl SealedStorage for InsecureMemoryStorage {
             .map(|bytes| SecretSlice::from(bytes.clone()))
             .ok_or_else(|| TeeError::NotFound(label.to_owned()))
     }
+
+    fn exists(&self, label: &str) -> bool {
+        self.secrets
+            .lock()
+            .is_ok_and(|secrets| secrets.contains_key(label))
+    }
 }
 
 /// ファイルに平文で置く SealedStorage(TEE なしで B を動かす開発用)。
@@ -61,10 +67,6 @@ impl InsecureFileStorage {
         }
         Ok(self.dir.join(format!("{label}.sealed")))
     }
-
-    pub fn exists(&self, label: &str) -> bool {
-        self.path(label).is_ok_and(|p| p.exists())
-    }
 }
 
 impl SealedStorage for InsecureFileStorage {
@@ -81,6 +83,10 @@ impl SealedStorage for InsecureFileStorage {
         file.write_all(secret.expose_secret())
             .and_then(|()| file.sync_all())
             .map_err(|e| TeeError::Storage(e.to_string()))
+    }
+
+    fn exists(&self, label: &str) -> bool {
+        self.path(label).is_ok_and(|p| p.exists())
     }
 
     fn unseal(&self, label: &str) -> Result<SecretSlice<u8>, TeeError> {

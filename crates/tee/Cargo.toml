@@ -9,8 +9,13 @@ publish.workspace = true
 [features]
 # 開発用のモック(TEE なし)。本番ビルドで有効にしてはいけない
 insecure-mock = []
+# Nitro Enclave の中で KMS(attestation つき)で封印する
+nitro = ["dep:aes-gcm", "dep:base64", "dep:rand_core"]
 
 [dependencies]
+aes-gcm = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+rand_core = { workspace = true, optional = true }
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -18,7 +23,7 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-mw-tee = { path = ".", features = ["insecure-mock"] }
+mw-tee = { path = ".", features = ["insecure-mock", "nitro"] }
 
 [lints]
 workspace = true

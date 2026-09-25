@@ -6,3 +6,5 @@ secrets/
 *.key
 # 鍵・証明書・監査ログなどの実行時データ(コミットしない)
 /.local
+# ビルドした kmstool
+/deploy/nitro/kmstool
