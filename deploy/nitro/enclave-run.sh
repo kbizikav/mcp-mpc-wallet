@@ -38,13 +38,19 @@ log() {
 }
 
 set +e
+# パスキーの RP は serve のときだけ(ブラウザの localhost と、開発用ソフトウェアパスキー)
+extra=""
+if [ "$MW_MODE" = "serve" ]; then
+    extra="--passkey-rp mcp-mpc-wallet.local=https://mcp-mpc-wallet.local --passkey-rp localhost=http://localhost:8787"
+fi
+# shellcheck disable=SC2086
 /app/mw-node-b "$MW_MODE" \
     --listen vsock:7443 \
     --tls-dir /data/tls \
     --data-dir /data \
     --kms-key-id "$MW_KMS_KEY_ID" \
     --kms-region "$AWS_REGION" \
-    --enclave-tls 2>&1 | log
+    --enclave-tls $extra 2>&1 | log
 status=$?
 sync_data
 echo "mw-node-b exited with $status" | log

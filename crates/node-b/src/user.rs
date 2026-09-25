@@ -16,8 +16,8 @@ use mw_core::{
 use mw_judge::LlmClient;
 use mw_mpc::ThresholdSigner;
 use mw_policy::{
-    PasskeyVerifier, PendingView, RegisteredPasskey, SignedUserOperation, UserOperation,
-    UserRequest, UserResponse,
+    ActivityView, PasskeyVerifier, PendingView, RegisteredPasskey, SignedUserOperation,
+    UserOperation, UserRequest, UserResponse,
 };
 use mw_simulator::Simulator;
 use serde::{Deserialize, Serialize};
@@ -182,8 +182,7 @@ where
     fn verify_passkey(&self, signed: &SignedUserOperation) -> Result<(), UserError> {
         let wallet = self.checked_wallet(signed.operation.wallet())?;
         let verifier = PasskeyVerifier {
-            rp_id: self.config.passkey_rp_id.clone(),
-            origin: self.config.passkey_origin.clone(),
+            allowed: self.config.passkey_rps.clone(),
         };
         let mut passkeys = self.passkeys.lock().expect("passkeys poisoned");
         let key = passkeys.get_mut(&wallet).ok_or(UserError::NoPasskey)?;
@@ -206,9 +205,7 @@ where
             UserOperation::SetPolicy { policy } => {
                 let (wallet, version) = (policy.wallet, policy.version);
                 self.policies.install_verified(policy)?;
-                self.parts
-                    .notifier
-                    .notify(UserNotice::PolicyUpdated { wallet, version });
+                self.notify(UserNotice::PolicyUpdated { wallet, version });
                 Ok(UserResponse::PolicySet { version })
             }
             UserOperation::ApproveRequest { wallet, request_id } => {
@@ -223,15 +220,17 @@ where
                     .lock()
                     .expect("guard poisoned")
                     .unfreeze(wallet, freeze_epoch)?;
-                self.parts.notifier.notify(UserNotice::Unfrozen { wallet });
+                self.notify(UserNotice::Unfrozen { wallet });
                 Ok(UserResponse::Unfrozen)
             }
-            UserOperation::ListPending { issued_at, .. } => {
+            UserOperation::ListPending { wallet, issued_at } => {
                 if now.abs_diff(issued_at) > APPROVAL_TTL_SECS {
                     return Err(UserError::StaleOperation);
                 }
                 Ok(UserResponse::PendingRequests {
                     requests: self.pending_views(now),
+                    recent: self.activity_views(),
+                    policy_text: self.policies.get(wallet).map(|p| p.text),
                 })
             }
             UserOperation::ApproveRecovery { .. } => Err(UserError::WrongFlow),
@@ -270,7 +269,7 @@ where
             return reject(CoarseReason::InvalidRequest);
         }
         if let Err(e) = self.verify_passkey(&signed) {
-            self.parts.notifier.notify(UserNotice::Rejected {
+            self.notify(UserNotice::Rejected {
                 wallet,
                 request_id: signing_hash,
                 reasons: vec![format!("recovery refused: {e}")],
@@ -323,6 +322,20 @@ where
         };
         let result = self.redeem_and_submit(wallet, prepared, peer).await;
         self.report_submission(wallet, signing_hash, result)
+    }
+
+    /// 直近の出来事(新しい順)。
+    fn activity_views(&self) -> Vec<ActivityView> {
+        self.activity
+            .lock()
+            .expect("activity poisoned")
+            .iter()
+            .rev()
+            .map(|(at, notice)| ActivityView {
+                at: *at,
+                notice: serde_json::to_value(notice).unwrap_or_default(),
+            })
+            .collect()
     }
 
     fn pending_views(&self, now: u64) -> Vec<PendingView> {
@@ -393,9 +406,7 @@ where
         {
             entry.approved = true;
         }
-        self.parts
-            .notifier
-            .notify(UserNotice::ApprovedByUser { wallet, request_id });
+        self.notify(UserNotice::ApprovedByUser { wallet, request_id });
         Ok(())
     }
 

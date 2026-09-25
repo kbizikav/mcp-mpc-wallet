@@ -24,6 +24,11 @@ use mw_node_b::{
     Components, DEFAULT_ORIGIN, DEFAULT_RP_ID, JudgeNode, NodeConfig, SystemClock,
     UserStateSnapshot,
 };
+use mw_policy::RelyingParty;
+
+fn default_rps() -> Vec<RelyingParty> {
+    vec![RelyingParty::new(DEFAULT_RP_ID, DEFAULT_ORIGIN)]
+}
 use mw_node_b_server::keygen::run_keygen;
 use mw_node_b_server::net::{Listen, RawListener, RawStream};
 use mw_node_b_server::notifier::JsonlNotifier;
@@ -91,10 +96,9 @@ enum Command {
         tls_dir: PathBuf,
         #[arg(long)]
         data_dir: PathBuf,
-        #[arg(long, default_value = DEFAULT_RP_ID)]
-        passkey_rp_id: String,
-        #[arg(long, default_value = DEFAULT_ORIGIN)]
-        passkey_origin: String,
+        /// 受け付けるパスキーの RP(`<rp_id>=<origin>`)。何回でも指定できる
+        #[arg(long = "passkey-rp", default_values_t = default_rps())]
+        passkey_rps: Vec<RelyingParty>,
         #[command(flatten)]
         seal: SealArgs,
         /// TLS 証明書を enclave の中で作り、attestation で証明する(Nitro Enclave 用)
@@ -255,8 +259,7 @@ async fn serve(
     listen: Listen,
     tls_dir: &Path,
     data_dir: &Path,
-    passkey_rp_id: String,
-    passkey_origin: String,
+    passkey_rps: Vec<RelyingParty>,
     seal: &SealArgs,
     enclave_tls: bool,
 ) -> anyhow::Result<()> {
@@ -282,8 +285,7 @@ async fn serve(
 
     let node = Arc::new(JudgeNode::new(
         NodeConfig {
-            passkey_rp_id,
-            passkey_origin,
+            passkey_rps,
             ..NodeConfig::new(CHAIN_ID)
         },
         Components {
@@ -361,21 +363,9 @@ async fn main() -> anyhow::Result<()> {
             listen,
             tls_dir,
             data_dir,
-            passkey_rp_id,
-            passkey_origin,
+            passkey_rps,
             seal,
             enclave_tls,
-        } => {
-            serve(
-                listen,
-                &tls_dir,
-                &data_dir,
-                passkey_rp_id,
-                passkey_origin,
-                &seal,
-                enclave_tls,
-            )
-            .await
-        }
+        } => serve(listen, &tls_dir, &data_dir, passkey_rps, &seal, enclave_tls).await,
     }
 }

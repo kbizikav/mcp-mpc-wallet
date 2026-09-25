@@ -309,6 +309,11 @@ async fn listing_pending_requires_a_fresh_signature() {
     let (node, mut passkey) = setup();
     let wallet = node.wallet();
     let request_id = pending_request(&node).await;
+    // 拒否される提案も 1 件(別チェーン)
+    let mut other_chain = proposal(wallet);
+    other_chain.chain_id = 1;
+    node.handle_proposal(other_chain, &mut ()).await;
+    signed(&node, &mut passkey, policy(wallet, 1)).await;
 
     let stale = signed(
         &node,
@@ -331,10 +336,23 @@ async fn listing_pending_requires_a_fresh_signature() {
     )
     .await
     {
-        UserResponse::PendingRequests { requests } => {
+        UserResponse::PendingRequests {
+            requests,
+            recent,
+            policy_text,
+        } => {
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].request_id, request_id);
             assert!(!requests[0].approved);
+            assert_eq!(policy_text.as_deref(), Some("small transfers only"));
+            // 新しい順: 方針の更新 → 拒否 → 要確認
+            let kinds: Vec<&str> = recent
+                .iter()
+                .map(|a| a.notice["kind"].as_str().unwrap())
+                .collect();
+            assert_eq!(kinds, ["policy_updated", "rejected", "needs_confirmation"]);
+            let reasons = recent[1].notice["reasons"][0].as_str().unwrap();
+            assert!(reasons.contains("chain id mismatch"), "{reasons}");
         }
         other => panic!("{other:?}"),
     }

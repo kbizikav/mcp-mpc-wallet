@@ -1,0 +1,32 @@
+[package]
+name = "mw-owner-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mw-owner"
+path = "src/main.rs"
+
+[dependencies]
+alloy-primitives.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+clap.workspace = true
+mw-chain.workspace = true
+mw-core.workspace = true
+mw-node-a.workspace = true
+mw-policy = { workspace = true, features = ["software-passkey"] }
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net", "rt-multi-thread"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+p256.workspace = true

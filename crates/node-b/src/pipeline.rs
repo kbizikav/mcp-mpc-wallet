@@ -5,7 +5,7 @@
 //! 検算の食い違いなし、LLM の全サンプルが承認。
 //! それ以外はすべて「要確認」か「拒否」に倒れる(不変条件 7)。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
 use alloy_primitives::{Address, B256, keccak256};
@@ -20,7 +20,7 @@ use mw_core::{
 };
 use mw_judge::{LlmClient, build_request, escape_data, judge};
 use mw_mpc::ThresholdSigner;
-use mw_policy::RegisteredPasskey;
+use mw_policy::{RegisteredPasskey, RelyingParty};
 use mw_simulator::{SimulationRequest, Simulator};
 
 use crate::Clock;
@@ -37,9 +37,8 @@ pub struct NodeConfig {
     /// LLM に同じ問い合わせを投げる回数
     pub llm_samples: usize,
     pub guard: GuardConfig,
-    /// ユーザーのパスキーの RP ID と origin
-    pub passkey_rp_id: String,
-    pub passkey_origin: String,
+    /// 受け付けるパスキーの RP(RP ID と origin の組)
+    pub passkey_rps: Vec<RelyingParty>,
 }
 
 impl NodeConfig {
@@ -48,14 +47,16 @@ impl NodeConfig {
             chain_id,
             llm_samples: 3,
             guard: GuardConfig::default(),
-            passkey_rp_id: DEFAULT_RP_ID.into(),
-            passkey_origin: DEFAULT_ORIGIN.into(),
+            passkey_rps: vec![RelyingParty::new(DEFAULT_RP_ID, DEFAULT_ORIGIN)],
         }
     }
 }
 
 pub const DEFAULT_RP_ID: &str = "mcp-mpc-wallet.local";
 pub const DEFAULT_ORIGIN: &str = "https://mcp-mpc-wallet.local";
+
+/// オーナー用の一覧に残す出来事の数
+const ACTIVITY_LIMIT: usize = 50;
 
 /// 要確認の要求は、この時間を過ぎたら捨てる
 pub(crate) const PENDING_TTL_SECS: u64 = 3_600;
@@ -154,6 +155,8 @@ pub struct JudgeNode<C, S, L, T, N, K, A> {
     pub(crate) audit: Mutex<AuditLog<A>>,
     pub(crate) pending: Mutex<HashMap<B256, Pending>>,
     pub(crate) passkeys: Mutex<HashMap<Address, RegisteredPasskey>>,
+    /// ユーザーに通知した直近の出来事(オーナー用の一覧で見せる)
+    pub(crate) activity: Mutex<VecDeque<(u64, UserNotice)>>,
     /// 提案とユーザー操作を 1 件ずつ処理する(nonce の競合を避ける)
     pub(crate) serial: tokio::sync::Mutex<()>,
 }
@@ -182,8 +185,21 @@ where
             audit: Mutex::new(audit),
             pending: Mutex::new(HashMap::new()),
             passkeys: Mutex::new(HashMap::new()),
+            activity: Mutex::new(VecDeque::new()),
             serial: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// ユーザーに通知し、オーナー用の一覧にも残す。
+    pub(crate) fn notify(&self, notice: UserNotice) {
+        {
+            let mut activity = self.activity.lock().expect("activity poisoned");
+            if activity.len() == ACTIVITY_LIMIT {
+                activity.pop_front();
+            }
+            activity.push_back((self.parts.clock.now_unix(), notice.clone()));
+        }
+        self.parts.notifier.notify(notice);
     }
 
     pub fn parts(&self) -> &Components<C, S, L, T, N, K> {
@@ -207,7 +223,7 @@ where
     pub fn freeze(&self, wallet: Address) -> u64 {
         let mut guard = self.guard.lock().expect("guard poisoned");
         if guard.freeze(wallet) {
-            self.parts.notifier.notify(UserNotice::Frozen {
+            self.notify(UserNotice::Frozen {
                 wallet,
                 reason: "frozen by user".into(),
             });
@@ -280,7 +296,7 @@ where
     ) -> AgentOutcome {
         // 監査ログに残せなければ、署名に進まない
         if let Err(e) = self.record_audit(wallet, &assessment) {
-            self.parts.notifier.notify(UserNotice::SubmissionFailed {
+            self.notify(UserNotice::SubmissionFailed {
                 wallet,
                 request_id: assessment.request_id,
                 error: format!("audit log: {e}"),
@@ -296,7 +312,7 @@ where
             self.parts.clock.now_unix(),
         );
         if newly_frozen {
-            self.parts.notifier.notify(UserNotice::Frozen {
+            self.notify(UserNotice::Frozen {
                 wallet,
                 reason: "too many rejected proposals in a short time".into(),
             });
@@ -314,7 +330,7 @@ where
                 self.report_submission(wallet, assessment.request_id, result)
             }
             (Verdict::NeedsUserConfirmation, Some(prepared)) => {
-                self.parts.notifier.notify(UserNotice::NeedsConfirmation {
+                self.notify(UserNotice::NeedsConfirmation {
                     wallet,
                     request_id: assessment.request_id,
                     reasons: assessment.reasons.clone(),
@@ -336,7 +352,7 @@ where
                 }
             }
             _ => {
-                self.parts.notifier.notify(UserNotice::Rejected {
+                self.notify(UserNotice::Rejected {
                     wallet,
                     request_id: assessment.request_id,
                     reasons: assessment.reasons,
@@ -357,21 +373,17 @@ where
     ) -> AgentOutcome {
         match result {
             Ok(Submission::Sent(tx_hash)) => {
-                self.parts
-                    .notifier
-                    .notify(UserNotice::Submitted { wallet, tx_hash });
+                self.notify(UserNotice::Submitted { wallet, tx_hash });
                 AgentOutcome::Submitted { tx_hash }
             }
             Ok(Submission::Signed(signature)) => {
-                self.parts
-                    .notifier
-                    .notify(UserNotice::Signed { wallet, request_id });
+                self.notify(UserNotice::Signed { wallet, request_id });
                 AgentOutcome::Signed {
                     signature: Bytes::copy_from_slice(&signature.as_bytes()),
                 }
             }
             Err(e) => {
-                self.parts.notifier.notify(UserNotice::SubmissionFailed {
+                self.notify(UserNotice::SubmissionFailed {
                     wallet,
                     request_id,
                     error: e.to_string(),

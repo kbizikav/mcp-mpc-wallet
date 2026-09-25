@@ -65,9 +65,46 @@ struct ClientData {
     origin: String,
 }
 
-pub struct PasskeyVerifier {
+/// 受け付ける RP(RP ID と、その RP のページの origin の組)。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelyingParty {
     pub rp_id: String,
     pub origin: String,
+}
+
+impl RelyingParty {
+    pub fn new(rp_id: impl Into<String>, origin: impl Into<String>) -> Self {
+        Self {
+            rp_id: rp_id.into(),
+            origin: origin.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for RelyingParty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}={}", self.rp_id, self.origin)
+    }
+}
+
+impl std::str::FromStr for RelyingParty {
+    type Err = String;
+
+    /// `<rp_id>=<origin>` の形
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (rp_id, origin) = s
+            .split_once('=')
+            .ok_or_else(|| format!("expected <rp_id>=<origin>, got {s:?}"))?;
+        if rp_id.is_empty() || origin.is_empty() {
+            return Err(format!("expected <rp_id>=<origin>, got {s:?}"));
+        }
+        Ok(Self::new(rp_id, origin))
+    }
+}
+
+/// 複数の RP を受け付ける。assertion の origin に対応する RP の RP ID で照合する。
+pub struct PasskeyVerifier {
+    pub allowed: Vec<RelyingParty>,
 }
 
 impl PasskeyVerifier {
@@ -90,9 +127,11 @@ impl PasskeyVerifier {
         if client.challenge != encode_challenge(&signed.operation.challenge()) {
             return Err(PasskeyError::ClientData("challenge"));
         }
-        if client.origin != self.origin {
-            return Err(PasskeyError::ClientData("origin"));
-        }
+        let rp = self
+            .allowed
+            .iter()
+            .find(|rp| rp.origin == client.origin)
+            .ok_or(PasskeyError::ClientData("origin"))?;
 
         let auth = &a.authenticator_data;
         if auth.len() < AUTH_DATA_MIN_LEN {
@@ -100,7 +139,7 @@ impl PasskeyVerifier {
                 "authenticator data too short".into(),
             ));
         }
-        if auth[..32] != Sha256::digest(self.rp_id.as_bytes())[..] {
+        if auth[..32] != Sha256::digest(rp.rp_id.as_bytes())[..] {
             return Err(PasskeyError::WrongRelyingParty);
         }
         let flags = auth[32];
@@ -122,6 +161,21 @@ impl PasskeyVerifier {
             .verify(&message, &signature)
             .map_err(|_| PasskeyError::BadSignature)?;
         Ok(sign_count)
+    }
+}
+
+impl RegisteredPasskey {
+    /// ブラウザの `AuthenticatorAttestationResponse.getPublicKey()`(SPKI DER)から作る。
+    pub fn from_spki(credential_id: Bytes, spki_der: &[u8]) -> Result<Self, PasskeyError> {
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
+        use p256::pkcs8::DecodePublicKey;
+        let key = p256::PublicKey::from_public_key_der(spki_der)
+            .map_err(|e| PasskeyError::Malformed(format!("public key: {e}")))?;
+        Ok(Self {
+            credential_id,
+            public_key: Bytes::copy_from_slice(key.to_encoded_point(false).as_bytes()),
+            sign_count: 0,
+        })
     }
 }
 

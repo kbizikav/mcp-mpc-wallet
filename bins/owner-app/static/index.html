@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCP MPC Wallet</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">◈</span>
+      <div>
+        <h1>MCP MPC Wallet</h1>
+        <p class="tagline">Your AI agent proposes. An attested judge decides. You stay in control.</p>
+      </div>
+    </div>
+    <div id="badges" class="badges"></div>
+  </header>
+
+  <div id="host-warning" class="banner warn hidden">
+    Open this page at <a href="http://localhost:8787">http://localhost:8787</a> — passkeys are bound to <code>localhost</code>.
+  </div>
+  <div id="toast" class="toast hidden"></div>
+
+  <main>
+    <section class="card wide" id="wallet-card">
+      <div class="wallet-row">
+        <div>
+          <div class="label">Wallet</div>
+          <div id="wallet" class="mono big">…</div>
+        </div>
+        <div>
+          <div class="label">Balance</div>
+          <div id="balance" class="big">…</div>
+        </div>
+        <div>
+          <div class="label">Network</div>
+          <div id="network" class="big">…</div>
+        </div>
+        <div>
+          <div class="label">State</div>
+          <div id="state" class="big">…</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="passkey-card">
+      <h2>Passkey</h2>
+      <p class="muted">Every sensitive action is signed on this device with Touch ID. The judge node only accepts your passkey.</p>
+      <div id="passkey-status" class="muted"></div>
+      <button id="create-passkey" class="primary">Create passkey on this device</button>
+    </section>
+
+    <section class="card" id="emergency-card">
+      <h2>Emergency</h2>
+      <p class="muted">Freezing needs no signature, so you can stop the agent instantly. Unfreezing requires your passkey.</p>
+      <div class="row">
+        <button id="freeze" class="danger">Freeze wallet</button>
+        <button id="unfreeze">Unfreeze (Touch ID)</button>
+      </div>
+    </section>
+
+    <section class="card wide" id="owner-card">
+      <div class="card-head">
+        <h2>Owner view</h2>
+        <button id="unlock" class="primary">Unlock with Touch ID</button>
+      </div>
+      <p class="muted" id="owner-hint">Pending requests and the judge's decisions are shown only to you, after a fresh passkey signature.</p>
+      <div id="owner-body" class="hidden">
+        <h3>Pending approval</h3>
+        <div id="pending" class="list"></div>
+        <h3>Recent activity</h3>
+        <div id="activity" class="list"></div>
+      </div>
+    </section>
+
+    <section class="card wide" id="policy-card">
+      <h2>Policy</h2>
+      <p class="muted">Written in plain language. The judge compares what each transaction actually does against it. Only your passkey can change it — the agent cannot.</p>
+      <textarea id="policy" rows="5" placeholder="e.g. Plain ETH transfers of at most 0.0001 ETH per transaction are allowed. Everything else must be rejected."></textarea>
+      <div class="row">
+        <span id="policy-version" class="muted"></span>
+        <button id="save-policy" class="primary">Sign &amp; save policy</button>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    2-of-3 threshold ECDSA (cggmp21) · judge node in an AWS Nitro Enclave · Base Sepolia testnet
+  </footer>
+  <script src="/app.js"></script>
+</body>
+</html>

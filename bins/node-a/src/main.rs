@@ -9,7 +9,6 @@
 //! ```
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -22,8 +21,7 @@ use mw_node_a::session::BEndpoint;
 use mw_node_a::session::{connect, keygen, propose, resume};
 use mw_node_a::shares::{load_share_a, save_share_a, save_share_c};
 use mw_node_a::txbuild::{TxParams, build, encode_unsigned};
-use mw_tee::verify::ExpectedPcrs;
-use mw_wire::tls::{client_config, client_config_for_attested_server, read_pem};
+
 use rmcp::ServiceExt;
 use secrecy::SecretString;
 
@@ -100,25 +98,12 @@ enum Command {
     },
 }
 
-/// B への接続先。PCR0 が指定されていれば、B の証明書は attestation で信頼する。
 fn endpoint(conn: &Conn) -> anyhow::Result<BEndpoint> {
-    let cert = read_pem(&conn.tls_dir.join("node-a.pem"))?;
-    let key = read_pem(&conn.tls_dir.join("node-a.key"))?;
-    let (tls, expected): (Arc<rustls::ClientConfig>, _) = match &conn.expected_pcr0 {
-        Some(pcr0) => (
-            client_config_for_attested_server(&cert, &key)?,
-            Some(ExpectedPcrs::pcr0(pcr0)?),
-        ),
-        None => (
-            client_config(&read_pem(&conn.tls_dir.join("ca.pem"))?, &cert, &key)?,
-            None,
-        ),
-    };
-    Ok(BEndpoint {
-        addr: conn.node_b.clone(),
-        tls,
-        expected,
-    })
+    Ok(BEndpoint::from_files(
+        &conn.node_b,
+        &conn.tls_dir,
+        conn.expected_pcr0.as_deref(),
+    )?)
 }
 
 async fn rpc() -> anyhow::Result<JsonRpcClient> {

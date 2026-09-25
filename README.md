@@ -25,6 +25,10 @@ AI 判定(OpenAI)を行い、承認したものにだけ閾値署名で参加し
 | `mw-node-b` | 判定ノード B(`pki` / `keygen` / `register-passkey` / `serve`) |
 | `mw-node-a` | 署名ノード A と MCP サーバ(`keygen` / `info` / `propose` / `resume` / `mcp`) |
 | `mw-user` | 開発用ユーザーアプリ(ソフトウェアパスキー) |
+| `mw-owner` | オーナー用 Web アプリ(ブラウザのパスキー / Touch ID)。http://localhost:8787 |
+
+- エージェント(Claude Code)への MCP のインストール: [docs/install-mcp.md](docs/install-mcp.md)
+- 発表の台本: [docs/demo.md](docs/demo.md)
 
 ## 動かし方(Base Sepolia、TEE なしの開発構成)
 
@@ -55,6 +59,8 @@ mw-node-a mcp --node-b 127.0.0.1:7443 --tls-dir .local/node-a/tls --data-dir .lo
 B には `ALCHEMY_API_KEY`、`TENDERLY_API_KEY`、`TENDERLY_ACCOUNT_SLUG`、`TENDERLY_PROJECT_SLUG`、
 `OPENAI_API_KEY`(と任意で `OPENAI_MODEL`)が、A には `ALCHEMY_API_KEY` が必要。
 
+オーナーの操作はブラウザの `mw-owner` でもできる(パスキーは Touch ID。初回だけ `--legacy-passkey` で
+開発用パスキーから差し替える。B には `--passkey-rp localhost=http://localhost:8787` を渡しておく)。
 要確認になった tx は `mw-user pending` で詳細を見て `mw-user approve --request-id <id>` で承認し、
 5 分以内にエージェントが `resume_transaction` を呼ぶと送信される。
 `mw-user freeze` は署名なしで凍結でき、解除(`unfreeze`)にはパスキーが要る。

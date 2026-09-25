@@ -29,6 +29,13 @@ pub struct PendingView {
     pub effects: String,
 }
 
+/// B がユーザーに通知した出来事(送信、拒否とその理由、凍結など)。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityView {
+    pub at: u64,
+    pub notice: serde_json::Value,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum UserResponse {
@@ -43,8 +50,13 @@ pub enum UserResponse {
     Frozen {
         freeze_epoch: u64,
     },
+    /// オーナー用の一覧: 保留中の要求、直近の出来事、方針の本文
     PendingRequests {
         requests: Vec<PendingView>,
+        #[serde(default)]
+        recent: Vec<ActivityView>,
+        #[serde(default)]
+        policy_text: Option<String>,
     },
     RequestRejected {
         request_id: B256,

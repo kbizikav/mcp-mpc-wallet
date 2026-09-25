@@ -37,8 +37,6 @@ use mw_node_a::txbuild::{build_sweep, encode_unsigned};
 use mw_node_b::{DEFAULT_ORIGIN, DEFAULT_RP_ID};
 use mw_policy::software::SoftwarePasskey;
 use mw_policy::{UserOperation, UserRequest, UserResponse};
-use mw_tee::verify::ExpectedPcrs;
-use mw_wire::tls::{client_config, client_config_for_attested_server, read_pem};
 use secrecy::SecretString;
 
 #[derive(Parser)]
@@ -64,20 +62,11 @@ struct Target {
 
 impl Target {
     fn endpoint(&self) -> anyhow::Result<BEndpoint> {
-        let cert = read_pem(&self.tls_dir.join("node-a.pem"))?;
-        let key = read_pem(&self.tls_dir.join("node-a.key"))?;
-        Ok(match &self.expected_pcr0 {
-            Some(pcr0) => BEndpoint {
-                addr: self.node_b.clone(),
-                tls: client_config_for_attested_server(&cert, &key)?,
-                expected: Some(ExpectedPcrs::pcr0(pcr0)?),
-            },
-            None => BEndpoint {
-                addr: self.node_b.clone(),
-                tls: client_config(&read_pem(&self.tls_dir.join("ca.pem"))?, &cert, &key)?,
-                expected: None,
-            },
-        })
+        Ok(BEndpoint::from_files(
+            &self.node_b,
+            &self.tls_dir,
+            self.expected_pcr0.as_deref(),
+        )?)
     }
 }
 

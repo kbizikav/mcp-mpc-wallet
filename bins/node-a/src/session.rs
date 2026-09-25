@@ -29,6 +29,37 @@ pub struct BEndpoint {
     pub expected: Option<ExpectedPcrs>,
 }
 
+impl BEndpoint {
+    /// `tls_dir` の `node-a.pem` / `node-a.key`(と CA)から作る。
+    ///
+    /// PCR0 を指定すると、B の証明書はデプロイ CA ではなく attestation で信頼する。
+    pub fn from_files(
+        addr: &str,
+        tls_dir: &std::path::Path,
+        expected_pcr0: Option<&str>,
+    ) -> Result<Self, SessionError> {
+        use mw_wire::tls::{client_config, client_config_for_attested_server, read_pem};
+        let config = |e: mw_wire::tls::TlsError| SessionError::Config(e.to_string());
+        let cert = read_pem(&tls_dir.join("node-a.pem")).map_err(config)?;
+        let key = read_pem(&tls_dir.join("node-a.key")).map_err(config)?;
+        let (tls, expected) = match expected_pcr0 {
+            Some(pcr0) => (
+                client_config_for_attested_server(&cert, &key).map_err(config)?,
+                Some(ExpectedPcrs::pcr0(pcr0).map_err(|e| SessionError::Config(e.to_string()))?),
+            ),
+            None => {
+                let ca = read_pem(&tls_dir.join("ca.pem")).map_err(config)?;
+                (client_config(&ca, &cert, &key).map_err(config)?, None)
+            }
+        };
+        Ok(Self {
+            addr: addr.to_owned(),
+            tls,
+            expected,
+        })
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
     #[error("connection: {0}")]
@@ -45,6 +76,8 @@ pub enum SessionError {
     AddressMismatch,
     #[error("B failed attestation: {0}")]
     Attestation(String),
+    #[error("configuration: {0}")]
+    Config(String),
 }
 
 /// B に接続する。enclave の B なら、他の要求を送る前に attestation を検証する。

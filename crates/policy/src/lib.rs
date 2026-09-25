@@ -12,5 +12,7 @@ mod webauthn;
 pub mod software;
 
 pub use operation::{SignedUserOperation, UserOperation};
-pub use protocol::{PendingView, UserRequest, UserResponse};
-pub use webauthn::{PasskeyAssertion, PasskeyError, PasskeyVerifier, RegisteredPasskey};
+pub use protocol::{ActivityView, PendingView, UserRequest, UserResponse};
+pub use webauthn::{
+    PasskeyAssertion, PasskeyError, PasskeyVerifier, RegisteredPasskey, RelyingParty,
+};

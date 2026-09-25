@@ -89,15 +89,17 @@ mod tests {
     use mw_core::Policy;
 
     use super::*;
-    use crate::{PasskeyError, PasskeyVerifier};
+    use crate::{PasskeyError, PasskeyVerifier, RegisteredPasskey, RelyingParty};
 
     const RP: &str = "wallet.example";
     const ORIGIN: &str = "https://wallet.example";
 
     fn verifier() -> PasskeyVerifier {
         PasskeyVerifier {
-            rp_id: RP.into(),
-            origin: ORIGIN.into(),
+            allowed: vec![
+                RelyingParty::new(RP, ORIGIN),
+                RelyingParty::new("localhost", "http://localhost:8787"),
+            ],
         }
     }
 
@@ -151,16 +153,14 @@ mod tests {
 
         let registered = passkey.registration();
         let wrong_origin = PasskeyVerifier {
-            rp_id: RP.into(),
-            origin: "https://evil.example".into(),
+            allowed: vec![RelyingParty::new(RP, "https://evil.example")],
         };
         assert_eq!(
             wrong_origin.verify(&registered, &signed).unwrap_err(),
             PasskeyError::ClientData("origin")
         );
         let wrong_rp = PasskeyVerifier {
-            rp_id: "evil.example".into(),
-            origin: ORIGIN.into(),
+            allowed: vec![RelyingParty::new("evil.example", ORIGIN)],
         };
         assert_eq!(
             wrong_rp.verify(&registered, &signed).unwrap_err(),
@@ -183,6 +183,50 @@ mod tests {
             verifier().verify(&registered, &signed).unwrap_err(),
             PasskeyError::UserNotVerified
         );
+    }
+
+    #[test]
+    fn accepts_each_allowed_relying_party_with_its_own_rp_id() {
+        // ブラウザ(localhost)の形式でも、同じ検証器で通る
+        let mut browser = SoftwarePasskey::generate("localhost", "http://localhost:8787");
+        let registered = browser.registration();
+        assert!(
+            verifier()
+                .verify(&registered, &browser.sign(set_policy(1)))
+                .is_ok()
+        );
+
+        // origin と RP ID の組が合わないものは通らない
+        let mut mixed = SoftwarePasskey::generate(RP, "http://localhost:8787");
+        let registered = mixed.registration();
+        assert_eq!(
+            verifier()
+                .verify(&registered, &mixed.sign(set_policy(1)))
+                .unwrap_err(),
+            PasskeyError::WrongRelyingParty
+        );
+    }
+
+    #[test]
+    fn registration_from_browser_spki() {
+        use p256::pkcs8::EncodePublicKey;
+        let passkey = SoftwarePasskey::generate(RP, ORIGIN);
+        let registration = passkey.registration();
+        let key = p256::PublicKey::from_sec1_bytes(&registration.public_key).unwrap();
+        let spki = key.to_public_key_der().unwrap();
+        let from_spki =
+            RegisteredPasskey::from_spki(registration.credential_id.clone(), spki.as_bytes())
+                .unwrap();
+        assert_eq!(from_spki, registration);
+        assert!(RegisteredPasskey::from_spki(Bytes::new(), b"garbage").is_err());
+    }
+
+    #[test]
+    fn parses_relying_party_arguments() {
+        let rp: RelyingParty = "localhost=http://localhost:8787".parse().unwrap();
+        assert_eq!(rp, RelyingParty::new("localhost", "http://localhost:8787"));
+        assert!("localhost".parse::<RelyingParty>().is_err());
+        assert!("=x".parse::<RelyingParty>().is_err());
     }
 
     #[test]
