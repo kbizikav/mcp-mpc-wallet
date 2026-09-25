@@ -8,6 +8,7 @@ use mw_mpc::protocol::{
     KeyShare, PARTIES, PARTY_A, PARTY_C, PregeneratedPrimes, ProtocolError, SIGNERS_AB, address_of,
     aux_party, complete_share, execution_id, issue_partial, keygen_party, presign_party,
 };
+use mw_policy::{UserRequest, UserResponse};
 use mw_wire::{AtoB, BtoA, Connection, WireError};
 use rand_core::{OsRng, RngCore};
 use rustls::ClientConfig;
@@ -150,7 +151,50 @@ where
     // EIP-1559 の未署名 tx では、ペイロードの keccak256 が署名する hash
     let expected_hash = keccak256(&proposal.unsigned_tx);
     conn.send(&AtoB::Propose { proposal }).await?;
+    cosign_until_outcome(conn, share_a, expected_hash).await
+}
 
+/// ユーザーが承認した要求の署名・送信を B に再開させる。
+///
+/// `request_id` は提案した tx の signing hash なので、それ以外への署名要求には応じない。
+pub async fn resume<S>(
+    conn: &mut BConnection<S>,
+    share_a: &KeyShare,
+    wallet: Address,
+    request_id: B256,
+) -> Result<AgentOutcome, SessionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    conn.send(&AtoB::Resume { wallet, request_id }).await?;
+    cosign_until_outcome(conn, share_a, request_id).await
+}
+
+/// ユーザーアプリの要求を B に送る。
+pub async fn user_request<S>(
+    conn: &mut BConnection<S>,
+    request: UserRequest,
+) -> Result<UserResponse, SessionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    conn.send(&AtoB::User { request }).await?;
+    match conn.recv().await? {
+        BtoA::User { response } => Ok(response),
+        BtoA::Error { message } => Err(SessionError::Remote(message)),
+        other => Err(SessionError::Unexpected(format!("{other:?}"))),
+    }
+}
+
+/// B の署名要求のうち、`expected_hash` へのもの 1 回だけに応じ、最終結果を待つ。
+async fn cosign_until_outcome<S>(
+    conn: &mut BConnection<S>,
+    share_a: &KeyShare,
+    expected_hash: B256,
+) -> Result<AgentOutcome, SessionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
     let mut signed = false;
     loop {
         match conn.recv().await? {

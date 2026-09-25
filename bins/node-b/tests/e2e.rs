@@ -20,12 +20,17 @@ use mw_core::{AgentOutcome, CoarseReason, Policy, Proposal, UntrustedText};
 use mw_judge::ScriptedLlm;
 use mw_mpc::ThresholdSigner;
 use mw_mpc::protocol::{KeyShare, PARTY_A, PARTY_B, PARTY_C};
-use mw_node_a::session::{BConnection, keygen, propose};
+use mw_node_a::session::{BConnection, keygen, propose, resume, user_request};
 use mw_node_a::shares::{load_share_c, save_share_c};
-use mw_node_b::{Components, GuardConfig, JudgeNode, ManualClock, NodeConfig, RecordingNotifier};
+use mw_node_b::{
+    Components, DEFAULT_ORIGIN, DEFAULT_RP_ID, JudgeNode, ManualClock, NodeConfig,
+    RecordingNotifier,
+};
 use mw_node_b_server::CggmpSigner;
 use mw_node_b_server::keygen::run_keygen;
 use mw_node_b_server::server::serve_connection;
+use mw_policy::software::SoftwarePasskey;
+use mw_policy::{UserOperation, UserRequest, UserResponse};
 use mw_simulator::{AssetTransfer, ScriptedSimulator, SimulationReport};
 use mw_wire::tls::{client_config, generate_pki, server_config, server_name};
 use mw_wire::{AtoB, BtoA, Connection};
@@ -115,6 +120,10 @@ type Node = JudgeNode<
 >;
 
 fn node(share_b: KeyShare, verdicts: &str) -> Node {
+    node_with(share_b, verdicts, true)
+}
+
+fn node_with(share_b: KeyShare, verdicts: &str, with_policy: bool) -> Node {
     let signer = CggmpSigner::<DuplexStream>::new(share_b).unwrap();
     let wallet = signer.address();
     let chain = MockChain::new(CHAIN_ID, BLOCK);
@@ -124,11 +133,7 @@ fn node(share_b: KeyShare, verdicts: &str) -> Node {
     })
     .to_string();
     let node = JudgeNode::new(
-        NodeConfig {
-            chain_id: CHAIN_ID,
-            llm_samples: 3,
-            guard: GuardConfig::default(),
-        },
+        NodeConfig::new(CHAIN_ID),
         Components {
             chain,
             simulator: ScriptedSimulator::new([Ok(SimulationReport {
@@ -154,6 +159,9 @@ fn node(share_b: KeyShare, verdicts: &str) -> Node {
         },
         AuditLog::new(MemorySink::default()),
     );
+    if !with_policy {
+        return node;
+    }
     node.install_unverified_policy(Policy {
         wallet,
         version: 1,
@@ -193,7 +201,7 @@ async fn run_proposal(node: &Node, share_a: &KeyShare, p: Proposal) -> (AgentOut
         inner: a_io,
         seen: seen.clone(),
     };
-    let b_side = serve_connection(node, Connection::new(b_io));
+    let b_side = serve_connection(node, Connection::new(b_io), || {});
     let a_side = async {
         let mut conn: BConnection<Tap> = Connection::new(tap);
         let outcome = propose(&mut conn, share_a, p).await.unwrap();
@@ -252,6 +260,9 @@ async fn keygen_propose_sign_and_submit() {
     let reply = decline_mismatched_request(&share_a, proposal(wallet)).await;
     assert!(matches!(reply, AtoB::Decline { .. }), "{reply:?}");
 
+    // 方針なし → 要確認 → パスキーで承認 → A が再開して送信
+    user_approval_over_the_wire(share_b.clone(), &share_a).await;
+
     // 拒否される提案: 署名要求は来ず、何も送信されない
     let node = self::node(share_b, "reject");
     let (outcome, _) = run_proposal(&node, &share_a, proposal(wallet)).await;
@@ -300,4 +311,69 @@ async fn decline_mismatched_request(share_a: &KeyShare, p: Proposal) -> AtoB {
         }
     );
     reply
+}
+
+/// 1 本の接続で B と話す。
+async fn with_b<T>(
+    node: &Node,
+    session: impl AsyncFnOnce(&mut BConnection<DuplexStream>) -> T,
+) -> T {
+    let (a_io, b_io) = tokio::io::duplex(1 << 20);
+    let b_side = serve_connection(node, Connection::new(b_io), || {});
+    let a_side = async {
+        let mut conn: BConnection<DuplexStream> = Connection::new(a_io);
+        let out = session(&mut conn).await;
+        drop(conn);
+        out
+    };
+    let (served, out) = tokio::join!(b_side, a_side);
+    served.unwrap();
+    out
+}
+
+async fn user_approval_over_the_wire(share_b: KeyShare, share_a: &KeyShare) {
+    // 方針がないので、提案は必ず要確認になる
+    let node = node_with(share_b, "approve", false);
+    let wallet = node.wallet();
+    let mut passkey = SoftwarePasskey::generate(DEFAULT_RP_ID, DEFAULT_ORIGIN);
+    node.register_passkey(wallet, passkey.registration())
+        .unwrap();
+
+    let request_id = match with_b(&node, async |c| propose(c, share_a, proposal(wallet)).await)
+        .await
+        .unwrap()
+    {
+        AgentOutcome::PendingUserConfirmation { request_id } => request_id,
+        other => panic!("expected pending, got {other:?}"),
+    };
+
+    // 承認前の再開は保留のまま
+    let early = with_b(&node, async |c| {
+        resume(c, share_a, wallet, request_id).await
+    })
+    .await
+    .unwrap();
+    assert_eq!(early, AgentOutcome::PendingUserConfirmation { request_id });
+
+    let signed = passkey.sign(UserOperation::ApproveRequest { wallet, request_id });
+    let approved = with_b(&node, async |c| {
+        user_request(c, UserRequest::Signed { signed }).await
+    })
+    .await
+    .unwrap();
+    assert_eq!(approved, UserResponse::Approved { request_id });
+
+    let outcome = with_b(&node, async |c| {
+        resume(c, share_a, wallet, request_id).await
+    })
+    .await
+    .unwrap();
+    let AgentOutcome::Submitted { tx_hash } = outcome else {
+        panic!("expected submission, got {outcome:?}");
+    };
+    let sent = node.parts().chain.sent();
+    assert_eq!(sent.len(), 1);
+    let envelope = TxEnvelope::decode_2718(&mut sent[0].as_ref()).unwrap();
+    assert_eq!(*envelope.tx_hash(), tx_hash);
+    assert_eq!(envelope.recover_signer().unwrap(), wallet);
 }

@@ -4,6 +4,7 @@ use std::collections::{HashMap, VecDeque};
 
 use alloy_primitives::Address;
 use mw_core::Verdict;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub struct GuardConfig {
@@ -38,6 +39,35 @@ struct WalletState {
     proposals: VecDeque<u64>,
     rejects: VecDeque<u64>,
     frozen: bool,
+    /// 凍結するたびに増える。凍結の解除にはこの値への署名が必要
+    freeze_epoch: u64,
+}
+
+impl WalletState {
+    fn freeze(&mut self) -> bool {
+        if self.frozen {
+            return false;
+        }
+        self.frozen = true;
+        self.freeze_epoch += 1;
+        true
+    }
+}
+
+/// 永続化する凍結状態。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreezeState {
+    pub wallet: Address,
+    pub frozen: bool,
+    pub freeze_epoch: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum UnfreezeError {
+    #[error("the wallet is not frozen")]
+    NotFrozen,
+    #[error("the unfreeze was signed for freeze epoch {signed}, current is {current}")]
+    StaleEpoch { signed: u64, current: u64 },
 }
 
 pub struct WalletGuard {
@@ -84,19 +114,56 @@ impl WalletGuard {
         let state = self.wallets.entry(wallet).or_default();
         prune(&mut state.rejects, now, self.config.reject_window_secs);
         state.rejects.push_back(now);
-        if !state.frozen && state.rejects.len() >= self.config.max_rejects {
-            state.frozen = true;
-            return true;
-        }
-        false
+        state.rejects.len() >= self.config.max_rejects && state.freeze()
     }
 
-    pub fn freeze(&mut self, wallet: Address) {
-        self.wallets.entry(wallet).or_default().frozen = true;
+    /// 凍結する。新たに凍結したら `true`。
+    pub fn freeze(&mut self, wallet: Address) -> bool {
+        self.wallets.entry(wallet).or_default().freeze()
+    }
+
+    /// 現在の凍結の世代に署名された解除だけを受け付ける。
+    pub fn unfreeze(&mut self, wallet: Address, signed_epoch: u64) -> Result<(), UnfreezeError> {
+        let state = self.wallets.entry(wallet).or_default();
+        if !state.frozen {
+            return Err(UnfreezeError::NotFrozen);
+        }
+        if signed_epoch != state.freeze_epoch {
+            return Err(UnfreezeError::StaleEpoch {
+                signed: signed_epoch,
+                current: state.freeze_epoch,
+            });
+        }
+        state.frozen = false;
+        state.rejects.clear();
+        Ok(())
     }
 
     pub fn is_frozen(&self, wallet: Address) -> bool {
         self.wallets.get(&wallet).is_some_and(|s| s.frozen)
+    }
+
+    pub fn freeze_epoch(&self, wallet: Address) -> u64 {
+        self.wallets.get(&wallet).map_or(0, |s| s.freeze_epoch)
+    }
+
+    pub fn snapshot(&self) -> Vec<FreezeState> {
+        self.wallets
+            .iter()
+            .map(|(&wallet, s)| FreezeState {
+                wallet,
+                frozen: s.frozen,
+                freeze_epoch: s.freeze_epoch,
+            })
+            .collect()
+    }
+
+    pub fn restore(&mut self, states: &[FreezeState]) {
+        for s in states {
+            let state = self.wallets.entry(s.wallet).or_default();
+            state.frozen = s.frozen;
+            state.freeze_epoch = s.freeze_epoch;
+        }
     }
 }
 
@@ -138,6 +205,37 @@ mod tests {
         assert_eq!(g.admit(W, 1_000), Admission::Frozen);
         // 凍結の通知は一度だけ
         assert!(!g.record(W, Verdict::Reject, 4));
+    }
+
+    #[test]
+    fn unfreeze_requires_current_epoch() {
+        let mut g = guard();
+        assert_eq!(g.unfreeze(W, 0), Err(UnfreezeError::NotFrozen));
+        assert!(g.freeze(W));
+        assert!(!g.freeze(W), "already frozen");
+        assert_eq!(g.freeze_epoch(W), 1);
+        g.unfreeze(W, 1).unwrap();
+        assert!(!g.is_frozen(W));
+
+        // 前回の解除の署名は、次の凍結には使えない
+        g.freeze(W);
+        assert_eq!(
+            g.unfreeze(W, 1),
+            Err(UnfreezeError::StaleEpoch {
+                signed: 1,
+                current: 2
+            })
+        );
+    }
+
+    #[test]
+    fn snapshot_round_trip() {
+        let mut g = guard();
+        g.freeze(W);
+        let mut restored = guard();
+        restored.restore(&g.snapshot());
+        assert!(restored.is_frozen(W));
+        assert_eq!(restored.freeze_epoch(W), 1);
     }
 
     #[test]

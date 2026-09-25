@@ -11,9 +11,11 @@ pub mod notify;
 pub mod pipeline;
 pub mod policy_store;
 pub mod signals;
+pub mod user;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use guard::{Admission, GuardConfig, WalletGuard};
 pub use notify::{RecordingNotifier, UserNotice, UserNotifier};
-pub use pipeline::{Components, JudgeNode, NodeConfig};
+pub use pipeline::{Components, DEFAULT_ORIGIN, DEFAULT_RP_ID, JudgeNode, NodeConfig};
 pub use policy_store::PolicyStore;
+pub use user::{UserError, UserStateSnapshot};

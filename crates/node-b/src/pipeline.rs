@@ -5,6 +5,7 @@
 //! 検算の食い違いなし、LLM の全サンプルが承認。
 //! それ以外はすべて「要確認」か「拒否」に倒れる(不変条件 7)。
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use alloy_primitives::{Address, B256, keccak256};
@@ -16,6 +17,7 @@ use mw_core::{
 };
 use mw_judge::{LlmClient, build_request, escape_data, judge};
 use mw_mpc::ThresholdSigner;
+use mw_policy::RegisteredPasskey;
 use mw_simulator::{SimulationRequest, Simulator};
 
 use crate::Clock;
@@ -32,7 +34,28 @@ pub struct NodeConfig {
     /// LLM に同じ問い合わせを投げる回数
     pub llm_samples: usize,
     pub guard: GuardConfig,
+    /// ユーザーのパスキーの RP ID と origin
+    pub passkey_rp_id: String,
+    pub passkey_origin: String,
 }
+
+impl NodeConfig {
+    pub fn new(chain_id: u64) -> Self {
+        Self {
+            chain_id,
+            llm_samples: 3,
+            guard: GuardConfig::default(),
+            passkey_rp_id: DEFAULT_RP_ID.into(),
+            passkey_origin: DEFAULT_ORIGIN.into(),
+        }
+    }
+}
+
+pub const DEFAULT_RP_ID: &str = "mcp-mpc-wallet.local";
+pub const DEFAULT_ORIGIN: &str = "https://mcp-mpc-wallet.local";
+
+/// 要確認の要求は、この時間を過ぎたら捨てる
+pub(crate) const PENDING_TTL_SECS: u64 = 3_600;
 
 /// B が外部とやりとりする部品。
 pub struct Components<C, S, L, T, N, K> {
@@ -45,10 +68,20 @@ pub struct Components<C, S, L, T, N, K> {
 }
 
 /// 署名に進むために必要な、検証済みの情報。
-struct Prepared {
-    decoded: DecodedTx,
-    key: SigningRequestKey,
-    witness: TimeWitness,
+pub(crate) struct Prepared {
+    pub(crate) decoded: DecodedTx,
+    pub(crate) key: SigningRequestKey,
+    pub(crate) witness: TimeWitness,
+}
+
+/// ユーザーの確認を待っている要求。
+pub(crate) struct Pending {
+    pub(crate) prepared: Prepared,
+    pub(crate) created_at: u64,
+    pub(crate) reasons: Vec<String>,
+    pub(crate) summary: Option<String>,
+    pub(crate) input_summary: String,
+    pub(crate) approved: bool,
 }
 
 /// 1 件の提案の判定結果。
@@ -82,7 +115,7 @@ impl Assessment {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum SubmitError {
+pub(crate) enum SubmitError {
     #[error("approval: {0}")]
     Approval(#[from] mw_core::ApprovalError),
     #[error("chain: {0}")]
@@ -96,14 +129,16 @@ enum SubmitError {
 }
 
 pub struct JudgeNode<C, S, L, T, N, K, A> {
-    config: NodeConfig,
-    parts: Components<C, S, L, T, N, K>,
-    policies: PolicyStore,
-    approvals: ApprovalRegistry,
-    guard: Mutex<WalletGuard>,
-    audit: Mutex<AuditLog<A>>,
-    /// 提案を 1 件ずつ処理する(nonce の競合を避ける)
-    serial: tokio::sync::Mutex<()>,
+    pub(crate) config: NodeConfig,
+    pub(crate) parts: Components<C, S, L, T, N, K>,
+    pub(crate) policies: PolicyStore,
+    pub(crate) approvals: ApprovalRegistry,
+    pub(crate) guard: Mutex<WalletGuard>,
+    pub(crate) audit: Mutex<AuditLog<A>>,
+    pub(crate) pending: Mutex<HashMap<B256, Pending>>,
+    pub(crate) passkeys: Mutex<HashMap<Address, RegisteredPasskey>>,
+    /// 提案とユーザー操作を 1 件ずつ処理する(nonce の競合を避ける)
+    pub(crate) serial: tokio::sync::Mutex<()>,
 }
 
 impl<C, S, L, T, N, K, A> JudgeNode<C, S, L, T, N, K, A>
@@ -128,6 +163,8 @@ where
             policies: PolicyStore::default(),
             approvals: ApprovalRegistry::new(),
             audit: Mutex::new(audit),
+            pending: Mutex::new(HashMap::new()),
+            passkeys: Mutex::new(HashMap::new()),
             serial: tokio::sync::Mutex::new(()),
         }
     }
@@ -140,9 +177,7 @@ where
         self.parts.signer.address()
     }
 
-    /// パスキー検証を通さずに方針を登録する(不変条件 6 を満たさない)。
-    ///
-    /// テストと、パスキー登録(M5)ができるまでの開発用。本番ビルドで有効にしてはいけない。
+    /// パスキー検証を通さずに方針を登録する(不変条件 6 を満たさない)。テスト専用。
     #[cfg(feature = "unverified-policy")]
     pub fn install_unverified_policy(
         &self,
@@ -151,13 +186,16 @@ where
         self.policies.install_verified(policy)
     }
 
-    /// ユーザー操作による凍結。
-    pub fn freeze(&self, wallet: Address) {
-        self.guard.lock().expect("guard poisoned").freeze(wallet);
-        self.parts.notifier.notify(UserNotice::Frozen {
-            wallet,
-            reason: "frozen by user".into(),
-        });
+    /// ユーザー操作による凍結。署名なしでできる。現在の凍結の世代を返す。
+    pub fn freeze(&self, wallet: Address) -> u64 {
+        let mut guard = self.guard.lock().expect("guard poisoned");
+        if guard.freeze(wallet) {
+            self.parts.notifier.notify(UserNotice::Frozen {
+                wallet,
+                reason: "frozen by user".into(),
+            });
+        }
+        guard.freeze_epoch(wallet)
     }
 
     pub fn is_frozen(&self, wallet: Address) -> bool {
@@ -251,14 +289,24 @@ where
                     }
                 }
             }
-            (Verdict::NeedsUserConfirmation, Some(_)) => {
-                // 保留中の要求の保存とユーザー承認の受付は M5 で追加する
+            (Verdict::NeedsUserConfirmation, Some(prepared)) => {
                 self.parts.notifier.notify(UserNotice::NeedsConfirmation {
                     wallet,
                     request_id: assessment.request_id,
-                    reasons: assessment.reasons,
-                    summary: assessment.summary,
+                    reasons: assessment.reasons.clone(),
+                    summary: assessment.summary.clone(),
                 });
+                self.pending.lock().expect("pending poisoned").insert(
+                    assessment.request_id,
+                    Pending {
+                        prepared,
+                        created_at: self.parts.clock.now_unix(),
+                        reasons: assessment.reasons,
+                        summary: assessment.summary,
+                        input_summary: assessment.input_summary,
+                        approved: false,
+                    },
+                );
                 AgentOutcome::PendingUserConfirmation {
                     request_id: assessment.request_id,
                 }
@@ -445,7 +493,7 @@ where
         }
     }
 
-    async fn time_and_nonce(
+    pub(crate) async fn time_and_nonce(
         &self,
         wallet: Address,
     ) -> Result<(TimeWitness, u64), mw_chain::ChainError> {
@@ -460,7 +508,7 @@ where
     }
 
     fn record_audit(&self, wallet: Address, a: &Assessment) -> Result<(), mw_audit::AuditError> {
-        let record = AuditRecord {
+        self.append_audit(AuditRecord {
             wallet,
             proposal_hash: a.request_id,
             input_summary: a.input_summary.clone(),
@@ -468,7 +516,10 @@ where
             simulation_hash: a.simulation_hash,
             verdict: a.verdict,
             reasons: a.reasons.clone(),
-        };
+        })
+    }
+
+    pub(crate) fn append_audit(&self, record: AuditRecord) -> Result<(), mw_audit::AuditError> {
         self.audit
             .lock()
             .expect("audit poisoned")
@@ -476,7 +527,7 @@ where
             .map(|_| ())
     }
 
-    /// 承認を登録し、直前に取り直した時刻と nonce で引き換えてから署名・送信する。
+    /// 承認を登録してから、引き換えて署名・送信する。
     async fn submit(
         &self,
         wallet: Address,
@@ -489,6 +540,16 @@ where
             issued: prepared.witness,
             origin,
         })?;
+        self.redeem_and_submit(wallet, prepared, peer).await
+    }
+
+    /// 登録済みの承認を、直前に取り直した時刻と nonce で引き換えてから署名・送信する。
+    pub(crate) async fn redeem_and_submit(
+        &self,
+        wallet: Address,
+        prepared: Prepared,
+        peer: &mut T::Peer,
+    ) -> Result<B256, SubmitError> {
         let (now, pending_nonce) = self.time_and_nonce(wallet).await?;
         let approved = self.approvals.redeem(&prepared.key, &now, pending_nonce)?;
 

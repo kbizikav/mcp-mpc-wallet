@@ -67,9 +67,8 @@ fn build(setup: Setup) -> Node {
     chain.set_nonce(wallet(), 0);
     let node = JudgeNode::new(
         NodeConfig {
-            chain_id: CHAIN_ID,
-            llm_samples: 3,
             guard: setup.guard,
+            ..NodeConfig::new(CHAIN_ID)
         },
         Components {
             chain,

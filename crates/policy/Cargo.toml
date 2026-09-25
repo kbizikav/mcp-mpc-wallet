@@ -1,0 +1,28 @@
+[package]
+name = "mw-policy"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# 開発用のソフトウェアパスキー(秘密鍵をファイルに置く)。本物のパスキーの代わりにだけ使う
+software-passkey = ["dep:rand_core"]
+
+[dependencies]
+alloy-primitives.workspace = true
+base64.workspace = true
+mw-core.workspace = true
+p256.workspace = true
+rand_core = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+mw-policy = { path = ".", features = ["software-passkey"] }
+
+[lints]
+workspace = true

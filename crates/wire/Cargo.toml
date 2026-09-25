@@ -11,6 +11,7 @@ alloy-primitives.workspace = true
 futures.workspace = true
 mw-core.workspace = true
 mw-mpc.workspace = true
+mw-policy.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 serde.workspace = true

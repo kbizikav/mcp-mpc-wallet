@@ -19,6 +19,7 @@ clap.workspace = true
 mw-chain.workspace = true
 mw-core.workspace = true
 mw-mpc.workspace = true
+mw-policy = { workspace = true, features = ["software-passkey"] }
 mw-wire.workspace = true
 rand_core.workspace = true
 rmcp.workspace = true

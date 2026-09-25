@@ -10,10 +10,6 @@ publish.workspace = true
 name = "mw-node-b"
 path = "src/main.rs"
 
-[features]
-# パスキー検証なしで方針ファイルを読み込む(M5 までの開発用。本番で有効にしない)
-unverified-policy = ["mw-node-b/unverified-policy"]
-
 [dependencies]
 alloy-primitives.workspace = true
 anyhow.workspace = true
@@ -24,6 +20,7 @@ mw-core.workspace = true
 mw-judge.workspace = true
 mw-mpc.workspace = true
 mw-node-b.workspace = true
+mw-policy.workspace = true
 mw-simulator.workspace = true
 mw-tee = { workspace = true, features = ["insecure-mock"] }
 mw-wire.workspace = true

@@ -7,7 +7,6 @@ use mw_core::Policy;
 /// ウォレットごとの有効な方針。
 ///
 /// 方針はユーザーのパスキー署名を検証できたものだけを登録する(不変条件 6)。
-/// パスキー検証つきの登録口は M5 で追加する。
 #[derive(Default)]
 pub struct PolicyStore {
     policies: Mutex<HashMap<Address, Policy>>,
@@ -28,9 +27,16 @@ impl PolicyStore {
             .cloned()
     }
 
+    pub fn all(&self) -> Vec<Policy> {
+        self.policies
+            .lock()
+            .expect("policy store poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
+
     /// 検証済みの方針を登録する。古いバージョンの再送は拒否する。
-    // パスキー検証つきの登録口(M5)ができるまでは unverified-policy からしか呼ばれない
-    #[cfg_attr(not(any(test, feature = "unverified-policy")), allow(dead_code))]
     pub(crate) fn install_verified(&self, policy: Policy) -> Result<(), PolicyStoreError> {
         let mut policies = self.policies.lock().expect("policy store poisoned");
         if let Some(current) = policies.get(&policy.wallet)

@@ -4,6 +4,7 @@
 //! mw-node-a keygen  --node-b <addr> --tls-dir <dir> --data-dir <dir> [--passphrase-file <path>]
 //! mw-node-a info    --data-dir <dir>
 //! mw-node-a propose --node-b <addr> --tls-dir <dir> --data-dir <dir> --to <addr> [--value-wei N] [--data 0x..] --note <text>
+//! mw-node-a resume  --node-b <addr> --tls-dir <dir> --data-dir <dir> --request-id <id> [--wait]
 //! mw-node-a mcp     --node-b <addr> --tls-dir <dir> --data-dir <dir>   # stdio の MCP サーバ
 //! ```
 
@@ -17,7 +18,7 @@ use mw_chain::JsonRpcClient;
 use mw_core::{AgentOutcome, Proposal, UntrustedText};
 use mw_mpc::protocol::address_of;
 use mw_node_a::mcp::{ProposeParams, WalletConfig, WalletServer};
-use mw_node_a::session::{connect, keygen, propose};
+use mw_node_a::session::{connect, keygen, propose, resume};
 use mw_node_a::shares::{load_share_a, save_share_a, save_share_c};
 use mw_node_a::txbuild::{TxParams, build, encode_unsigned};
 use mw_wire::tls::{client_config, read_pem};
@@ -75,6 +76,15 @@ enum Command {
         #[arg(long)]
         note: String,
         /// 採掘まで待つ
+        #[arg(long)]
+        wait: bool,
+    },
+    /// ユーザーが承認した要求の署名・送信を再開する(動作確認用)
+    Resume {
+        #[command(flatten)]
+        conn: Conn,
+        #[arg(long)]
+        request_id: alloy_primitives::B256,
         #[arg(long)]
         wait: bool,
     },
@@ -168,8 +178,23 @@ async fn run_propose(conn: &Conn, params: ProposeParams, wait: bool) -> anyhow::
     };
     let mut b = connect(&config.node_b, config.tls.clone()).await?;
     let outcome = propose(&mut b, &config.share_a, proposal).await?;
-    println!("{}", serde_json::to_string(&outcome)?);
+    report(&config, outcome, wait).await
+}
 
+async fn run_resume(
+    conn: &Conn,
+    request_id: alloy_primitives::B256,
+    wait: bool,
+) -> anyhow::Result<()> {
+    let config = wallet_config(conn).await?;
+    let mut b = connect(&config.node_b, config.tls.clone()).await?;
+    let outcome = resume(&mut b, &config.share_a, config.address, request_id).await?;
+    report(&config, outcome, wait).await
+}
+
+/// 結果を表示し、`wait` なら採掘まで待つ。
+async fn report(config: &WalletConfig, outcome: AgentOutcome, wait: bool) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string(&outcome)?);
     if let (true, AgentOutcome::Submitted { tx_hash }) = (wait, &outcome) {
         for _ in 0..60 {
             if let Some(receipt) = config.rpc.receipt(*tx_hash).await? {
@@ -219,6 +244,11 @@ async fn main() -> anyhow::Result<()> {
             };
             run_propose(&conn, params, wait).await
         }
+        Command::Resume {
+            conn,
+            request_id,
+            wait,
+        } => run_resume(&conn, request_id, wait).await,
         Command::Mcp { conn } => {
             let server = WalletServer::new(wallet_config(&conn).await?);
             let service = server.serve(rmcp::transport::stdio()).await?;

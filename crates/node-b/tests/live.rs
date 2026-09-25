@@ -21,9 +21,7 @@ use mw_core::{AgentOutcome, Policy, Proposal, UntrustedText, Verdict};
 use mw_judge::{OpenAiClient, OpenAiConfig, build_request, judge};
 use mw_mpc::ThresholdSigner;
 use mw_mpc::insecure_test::InsecureSingleKeySigner;
-use mw_node_b::{
-    Components, GuardConfig, JudgeNode, NodeConfig, RecordingNotifier, SystemClock, UserNotice,
-};
+use mw_node_b::{Components, JudgeNode, NodeConfig, RecordingNotifier, SystemClock, UserNotice};
 use mw_simulator::{SimulationRequest, Simulator, TenderlyConfig, TenderlySimulator};
 use secrecy::SecretString;
 
@@ -175,11 +173,7 @@ async fn live_pipeline_dry_run() {
     let signer = InsecureSingleKeySigner::random();
     let wallet = signer.address();
     let node = JudgeNode::new(
-        NodeConfig {
-            chain_id: BASE_SEPOLIA,
-            llm_samples: 3,
-            guard: GuardConfig::default(),
-        },
+        NodeConfig::new(BASE_SEPOLIA),
         Components {
             chain: DryRunChain {
                 inner: rpc().await,

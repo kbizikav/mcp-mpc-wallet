@@ -26,6 +26,17 @@ pub enum UserNotice {
         wallet: Address,
         tx_hash: B256,
     },
+    ApprovedByUser {
+        wallet: Address,
+        request_id: B256,
+    },
+    PolicyUpdated {
+        wallet: Address,
+        version: u64,
+    },
+    Unfrozen {
+        wallet: Address,
+    },
     SubmissionFailed {
         wallet: Address,
         request_id: B256,

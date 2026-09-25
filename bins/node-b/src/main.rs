@@ -3,10 +3,12 @@
 //! ```text
 //! mw-node-b pki    --node-b-dir <dir> --node-a-dir <dir>   # デプロイ用の CA と証明書を作る
 //! mw-node-b keygen --listen <addr> --tls-dir <dir> --data-dir <dir>
+//! mw-node-b register-passkey --data-dir <dir> --passkey <registration.json>   # B を止めて実行
 //! mw-node-b serve  --listen <addr> --tls-dir <dir> --data-dir <dir>
 //! ```
 //!
 //! TEE なしで動く開発用の構成。B のシェアは `<data-dir>/sealed` に平文で置かれる。
+//! パスキー・方針・凍結状態は `<data-dir>/user-state.json` に保存する。
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -19,7 +21,10 @@ use mw_chain::JsonRpcClient;
 use mw_judge::{OpenAiClient, OpenAiConfig};
 use mw_mpc::ThresholdSigner;
 use mw_mpc::protocol::KeyShare;
-use mw_node_b::{Components, GuardConfig, JudgeNode, NodeConfig, SystemClock};
+use mw_node_b::{
+    Components, DEFAULT_ORIGIN, DEFAULT_RP_ID, JudgeNode, NodeConfig, SystemClock,
+    UserStateSnapshot,
+};
 use mw_node_b_server::keygen::run_keygen;
 use mw_node_b_server::notifier::JsonlNotifier;
 use mw_node_b_server::server::serve_connection;
@@ -63,7 +68,15 @@ enum Command {
         #[arg(long)]
         data_dir: PathBuf,
     },
-    /// 提案を受け付けて判定・署名・送信する
+    /// ユーザーのパスキーを登録する(初回だけ。B を止めた状態で実行する)
+    RegisterPasskey {
+        #[arg(long)]
+        data_dir: PathBuf,
+        /// パスキーの公開情報(credential_id, public_key)の JSON
+        #[arg(long)]
+        passkey: PathBuf,
+    },
+    /// 提案とユーザー操作を受け付けて判定・署名・送信する
     Serve {
         #[arg(long)]
         listen: SocketAddr,
@@ -71,10 +84,10 @@ enum Command {
         tls_dir: PathBuf,
         #[arg(long)]
         data_dir: PathBuf,
-        /// パスキー検証なしで読み込む方針ファイル(開発用)
-        #[cfg(feature = "unverified-policy")]
-        #[arg(long)]
-        unverified_policy_file: Option<PathBuf>,
+        #[arg(long, default_value = DEFAULT_RP_ID)]
+        passkey_rp_id: String,
+        #[arg(long, default_value = DEFAULT_ORIGIN)]
+        passkey_origin: String,
     },
 }
 
@@ -128,11 +141,47 @@ fn load_share(storage: &InsecureFileStorage) -> anyhow::Result<KeyShare> {
     Ok(serde_json::from_slice(sealed.expose_secret())?)
 }
 
+const USER_STATE_FILE: &str = "user-state.json";
+
+fn load_user_state(data_dir: &Path) -> anyhow::Result<UserStateSnapshot> {
+    match std::fs::read(data_dir.join(USER_STATE_FILE)) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(UserStateSnapshot::default()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// 一時ファイルに書いてから置き換えるので、書きかけの状態は残らない。
+fn save_user_state(data_dir: &Path, state: &UserStateSnapshot) -> anyhow::Result<()> {
+    static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SAVE_LOCK.lock().expect("save lock poisoned");
+    let tmp = data_dir.join(format!("{USER_STATE_FILE}.tmp"));
+    std::fs::write(&tmp, serde_json::to_vec_pretty(state)?)?;
+    std::fs::rename(&tmp, data_dir.join(USER_STATE_FILE))?;
+    Ok(())
+}
+
+fn register_passkey(data_dir: &Path, passkey: &Path) -> anyhow::Result<()> {
+    let signer = CggmpSigner::<Stream>::new(load_share(&storage(data_dir)?)?)?;
+    let wallet = signer.address();
+    let registration: mw_policy::RegisteredPasskey =
+        serde_json::from_slice(&std::fs::read(passkey)?)?;
+    let mut state = load_user_state(data_dir)?;
+    if state.passkeys.iter().any(|(w, _)| *w == wallet) {
+        bail!("a passkey is already registered for {wallet}");
+    }
+    state.passkeys.push((wallet, registration));
+    save_user_state(data_dir, &state)?;
+    eprintln!("registered the passkey for {wallet}");
+    Ok(())
+}
+
 async fn serve(
     listen: SocketAddr,
     tls_dir: &Path,
     data_dir: &Path,
-    #[cfg(feature = "unverified-policy")] policy_file: Option<PathBuf>,
+    passkey_rp_id: String,
+    passkey_origin: String,
 ) -> anyhow::Result<()> {
     let signer = CggmpSigner::<Stream>::new(load_share(&storage(data_dir)?)?)?;
     let wallet = signer.address();
@@ -156,9 +205,9 @@ async fn serve(
 
     let node = Arc::new(JudgeNode::new(
         NodeConfig {
-            chain_id: CHAIN_ID,
-            llm_samples: 3,
-            guard: GuardConfig::default(),
+            passkey_rp_id,
+            passkey_origin,
+            ..NodeConfig::new(CHAIN_ID)
         },
         Components {
             chain,
@@ -171,21 +220,7 @@ async fn serve(
         audit,
     ));
 
-    #[cfg(feature = "unverified-policy")]
-    if let Some(path) = policy_file {
-        #[derive(serde::Deserialize)]
-        struct PolicyFile {
-            version: u64,
-            text: String,
-        }
-        let file: PolicyFile = serde_json::from_slice(&std::fs::read(&path)?)?;
-        eprintln!("WARNING: installing a policy without passkey verification (development only)");
-        node.install_unverified_policy(mw_core::Policy {
-            wallet,
-            version: file.version,
-            text: file.text,
-        })?;
-    }
+    node.restore(&load_user_state(data_dir)?)?;
 
     let acceptor = acceptor(tls_dir)?;
     let listener = TcpListener::bind(listen).await?;
@@ -194,6 +229,7 @@ async fn serve(
         let (tcp, peer) = listener.accept().await?;
         let acceptor = acceptor.clone();
         let node = node.clone();
+        let data_dir = data_dir.to_path_buf();
         tokio::spawn(async move {
             let tls = match acceptor.accept(tcp).await {
                 Ok(tls) => tls,
@@ -202,7 +238,12 @@ async fn serve(
                     return;
                 }
             };
-            if let Err(e) = serve_connection(&node, Connection::new(tls)).await {
+            let save = || {
+                if let Err(e) = save_user_state(&data_dir, &node.snapshot()) {
+                    eprintln!("failed to save user state: {e}");
+                }
+            };
+            if let Err(e) = serve_connection(&node, Connection::new(tls), save).await {
                 eprintln!("connection with {peer}: {e}");
             }
         });
@@ -229,21 +270,13 @@ async fn main() -> anyhow::Result<()> {
             tls_dir,
             data_dir,
         } => keygen(listen, &tls_dir, &data_dir).await,
+        Command::RegisterPasskey { data_dir, passkey } => register_passkey(&data_dir, &passkey),
         Command::Serve {
             listen,
             tls_dir,
             data_dir,
-            #[cfg(feature = "unverified-policy")]
-            unverified_policy_file,
-        } => {
-            serve(
-                listen,
-                &tls_dir,
-                &data_dir,
-                #[cfg(feature = "unverified-policy")]
-                unverified_policy_file,
-            )
-            .await
-        }
+            passkey_rp_id,
+            passkey_origin,
+        } => serve(listen, &tls_dir, &data_dir, passkey_rp_id, passkey_origin).await,
     }
 }

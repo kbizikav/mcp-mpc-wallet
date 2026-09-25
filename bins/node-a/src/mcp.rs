@@ -14,7 +14,7 @@ use rmcp::{schemars, tool, tool_router};
 use rustls::ClientConfig;
 use serde::Deserialize;
 
-use crate::session::{connect, propose};
+use crate::session::{connect, propose, resume};
 use crate::txbuild::{TxParams, build, encode_unsigned};
 
 pub struct WalletConfig {
@@ -50,6 +50,13 @@ pub struct ProposeParams {
     pub data: Option<String>,
     /// この tx の目的の説明。判定では参考情報としてだけ扱われる
     pub note: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ResumeParams {
+    /// `pending_user_confirmation` で返された request_id
+    pub request_id: String,
 }
 
 fn parse_params(p: &ProposeParams) -> Result<TxParams, String> {
@@ -117,6 +124,30 @@ impl WalletServer {
             .await
             .map_err(|e| format!("judge node unavailable: {e}"))?;
         let outcome = propose(&mut conn, &c.share_a, proposal)
+            .await
+            .map_err(|e| format!("judge node session failed: {e}"))?;
+        serde_json::to_string(&outcome).map_err(|e| e.to_string())
+    }
+
+    #[tool(
+        name = "resume_transaction",
+        description = "Continue a transaction that returned `pending_user_confirmation`. \
+                       If the owner has approved it with their passkey (within the last 5 \
+                       minutes), it is signed and submitted. Otherwise it stays pending."
+    )]
+    async fn resume_transaction(
+        &self,
+        Parameters(params): Parameters<ResumeParams>,
+    ) -> Result<String, String> {
+        let c = &self.config;
+        let request_id = params
+            .request_id
+            .parse()
+            .map_err(|e| format!("invalid `request_id`: {e}"))?;
+        let mut conn = connect(&c.node_b, c.tls.clone())
+            .await
+            .map_err(|e| format!("judge node unavailable: {e}"))?;
+        let outcome = resume(&mut conn, &c.share_a, c.address, request_id)
             .await
             .map_err(|e| format!("judge node session failed: {e}"))?;
         serde_json::to_string(&outcome).map_err(|e| e.to_string())

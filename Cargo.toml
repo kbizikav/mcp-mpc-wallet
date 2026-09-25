@@ -19,6 +19,7 @@ mw-chain = { path = "crates/chain" }
 mw-http = { path = "crates/http" }
 mw-node-b = { path = "crates/node-b" }
 mw-wire = { path = "crates/wire" }
+mw-policy = { path = "crates/policy" }
 mw-node-a = { path = "bins/node-a" }
 
 alloy-consensus = { version = "2.5", default-features = false, features = ["std", "serde"] }
@@ -28,10 +29,12 @@ alloy-rlp = "0.3"
 alloy-sol-types = "1.7"
 age = "0.12"
 anyhow = "1"
+base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 cggmp21 = { version = "0.6.3", features = ["curve-secp256k1"] }
 futures = "0.3"
 k256 = { version = "0.13", features = ["ecdsa"] }
+p256 = { version = "0.13", features = ["ecdsa"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 rmcp = { version = "3.4", features = ["server", "macros", "transport-io"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }

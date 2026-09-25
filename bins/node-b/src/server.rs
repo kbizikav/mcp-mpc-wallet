@@ -1,4 +1,4 @@
-//! A からの接続を処理する。
+//! A とユーザーアプリからの接続を処理する。
 
 use mw_audit::AuditSink;
 use mw_chain::ChainClient;
@@ -10,10 +10,13 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::signer::{AConnection, CggmpSigner};
 
-/// 1 本の接続で届く提案を順に処理する。署名済み tx は返さず、結果だけを返す。
+/// 1 本の接続で届く要求を順に処理する。署名済み tx は返さず、結果だけを返す。
+///
+/// `after_request` は要求を 1 件処理するたびに呼ばれる(状態の保存に使う)。
 pub async fn serve_connection<C, Sim, L, N, K, A, S>(
     node: &JudgeNode<C, Sim, L, CggmpSigner<S>, N, K, A>,
     mut conn: AConnection<S>,
+    after_request: impl Fn(),
 ) -> Result<(), WireError>
 where
     C: ChainClient,
@@ -33,7 +36,18 @@ where
         match msg {
             AtoB::Propose { proposal } => {
                 let outcome = node.handle_proposal(proposal, &mut conn).await;
+                after_request();
                 conn.send(&BtoA::Outcome { outcome }).await?;
+            }
+            AtoB::Resume { wallet, request_id } => {
+                let outcome = node.resume(wallet, request_id, &mut conn).await;
+                after_request();
+                conn.send(&BtoA::Outcome { outcome }).await?;
+            }
+            AtoB::User { request } => {
+                let response = node.handle_user_request(request).await;
+                after_request();
+                conn.send(&BtoA::User { response }).await?;
             }
             // 中断した署名セッションの残り。読み捨てる
             AtoB::Decline { .. } | AtoB::PartialSignature { .. } | AtoB::Mpc { .. } => {}
@@ -52,6 +66,8 @@ where
 fn kind(msg: &AtoB) -> &'static str {
     match msg {
         AtoB::Propose { .. } => "propose",
+        AtoB::Resume { .. } => "resume",
+        AtoB::User { .. } => "user",
         AtoB::Keygen { .. } => "keygen",
         AtoB::KeygenResult { .. } => "keygen_result",
         AtoB::Mpc { .. } => "mpc",

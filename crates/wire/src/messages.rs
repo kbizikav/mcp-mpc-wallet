@@ -1,6 +1,7 @@
 use alloy_primitives::{Address, B256};
 use mw_core::{AgentOutcome, Proposal};
 use mw_mpc::net::WireMsg;
+use mw_policy::{UserRequest, UserResponse};
 use serde::{Deserialize, Serialize};
 
 /// A(ユーザーの PC)から B(判定ノード)へ。
@@ -10,6 +11,15 @@ pub enum AtoB {
     /// 署名の提案。B が判定し、承認なら続けて `SignRequest` を送ってくる
     Propose {
         proposal: Proposal,
+    },
+    /// ユーザーが承認した要求の署名・送信を再開する
+    Resume {
+        wallet: Address,
+        request_id: B256,
+    },
+    /// ユーザーアプリからの操作(方針・承認・凍結など)
+    User {
+        request: UserRequest,
     },
     /// B のシェアがまだないときだけ受け付ける鍵生成
     Keygen {
@@ -52,11 +62,16 @@ pub enum BtoA {
     Outcome {
         outcome: AgentOutcome,
     },
+    User {
+        response: UserResponse,
+    },
     Error {
         message: String,
     },
 }
 
+// MPC 以外のメッセージは、後で読むためにそのまま返す(Err に載るのは意図どおり)
+#[allow(clippy::result_large_err)]
 impl AtoB {
     pub fn into_mpc(self) -> Result<WireMsg, Self> {
         match self {
@@ -66,6 +81,7 @@ impl AtoB {
     }
 }
 
+#[allow(clippy::result_large_err)]
 impl BtoA {
     pub fn into_mpc(self) -> Result<WireMsg, Self> {
         match self {
