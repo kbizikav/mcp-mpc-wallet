@@ -113,6 +113,16 @@ enum Command {
         #[arg(long)]
         passkey: PathBuf,
     },
+    /// パスキーを差し替える(今のパスキーで署名する)
+    RotatePasskey {
+        #[command(flatten)]
+        target: Target,
+        #[arg(long)]
+        passkey: PathBuf,
+        /// 新しいパスキーのファイル(`passkey-new` で作る)
+        #[arg(long)]
+        new_passkey: PathBuf,
+    },
     /// A をなくしたとき: C のシェアとパスキーで B と署名し、全額を `to` に移す
     Recover {
         #[command(flatten)]
@@ -325,6 +335,17 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?,
         ),
+        Command::RotatePasskey {
+            target,
+            passkey,
+            new_passkey,
+        } => {
+            let op = UserOperation::RotatePasskey {
+                wallet: target.wallet,
+                new_passkey: load_passkey(&new_passkey)?.registration(),
+            };
+            print(&send_signed(&target, &passkey, op).await?)
+        }
         Command::Recover {
             target,
             passkey,

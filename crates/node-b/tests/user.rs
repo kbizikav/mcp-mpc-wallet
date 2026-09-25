@@ -388,3 +388,42 @@ fn setup_without_passkey() -> Node {
         AuditLog::new(MemorySink::default()),
     )
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn passkey_rotation_requires_the_current_passkey() {
+    let (node, mut old) = setup();
+    let wallet = node.wallet();
+    let mut new = SoftwarePasskey::generate(DEFAULT_RP_ID, DEFAULT_ORIGIN);
+
+    // 新しいパスキーが自分で自分を登録することはできない
+    let self_signed = new.sign(UserOperation::RotatePasskey {
+        wallet,
+        new_passkey: new.registration(),
+    });
+    assert!(is_error(
+        &node
+            .handle_user_request(UserRequest::Signed {
+                signed: self_signed
+            })
+            .await
+    ));
+
+    assert_eq!(
+        signed(
+            &node,
+            &mut old,
+            UserOperation::RotatePasskey {
+                wallet,
+                new_passkey: new.registration(),
+            },
+        )
+        .await,
+        UserResponse::PasskeyRotated
+    );
+    // 以降は新しいパスキーだけが有効
+    assert!(is_error(&signed(&node, &mut old, policy(wallet, 1)).await));
+    assert_eq!(
+        signed(&node, &mut new, policy(wallet, 1)).await,
+        UserResponse::PolicySet { version: 1 }
+    );
+}

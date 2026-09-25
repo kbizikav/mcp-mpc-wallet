@@ -79,7 +79,7 @@ where
 {
     /// ユーザーのパスキーを登録する。まだ登録がないときだけ(初回の信頼)。
     ///
-    /// パスキーの差し替えは、今のパスキーの署名つき操作として後で追加する。
+    /// 差し替えは、今のパスキーで署名した `RotatePasskey` でだけできる。
     pub fn register_passkey(
         &self,
         wallet: Address,
@@ -235,6 +235,16 @@ where
                 })
             }
             UserOperation::ApproveRecovery { .. } => Err(UserError::WrongFlow),
+            UserOperation::RotatePasskey {
+                wallet,
+                new_passkey,
+            } => {
+                self.passkeys
+                    .lock()
+                    .expect("passkeys poisoned")
+                    .insert(wallet, new_passkey);
+                Ok(UserResponse::PasskeyRotated)
+            }
         }
     }
 

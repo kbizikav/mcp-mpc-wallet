@@ -2,7 +2,7 @@ use alloy_primitives::{Address, B256};
 use mw_core::{Policy, canonical_hash};
 use serde::{Deserialize, Serialize};
 
-use crate::PasskeyAssertion;
+use crate::{PasskeyAssertion, RegisteredPasskey};
 
 const OPERATION_DOMAIN: &str = "mcp-mpc-wallet/user-operation/v1";
 
@@ -20,6 +20,11 @@ pub enum UserOperation {
     ListPending { wallet: Address, issued_at: u64 },
     /// A をなくしたときに、B+C で署名する復旧 tx を承認する(tx の signing hash に束縛)
     ApproveRecovery { wallet: Address, signing_hash: B256 },
+    /// パスキーを差し替える。今のパスキーで署名する
+    RotatePasskey {
+        wallet: Address,
+        new_passkey: RegisteredPasskey,
+    },
 }
 
 impl UserOperation {
@@ -29,7 +34,8 @@ impl UserOperation {
             UserOperation::ApproveRequest { wallet, .. }
             | UserOperation::Unfreeze { wallet, .. }
             | UserOperation::ListPending { wallet, .. }
-            | UserOperation::ApproveRecovery { wallet, .. } => *wallet,
+            | UserOperation::ApproveRecovery { wallet, .. }
+            | UserOperation::RotatePasskey { wallet, .. } => *wallet,
         }
     }
 

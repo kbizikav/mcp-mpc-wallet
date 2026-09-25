@@ -39,6 +39,7 @@ pub enum UserResponse {
         request_id: B256,
     },
     Unfrozen,
+    PasskeyRotated,
     Frozen {
         freeze_epoch: u64,
     },
