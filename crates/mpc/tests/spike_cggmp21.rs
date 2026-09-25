@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! M0 spike: cggmp21 で次のフローが成立することを確認する。
 //!
 //! 1. A, B, C の 3 者で 2-of-3 の DKG と aux info 生成を行う
@@ -7,10 +9,10 @@
 //! A が持つのは presignature と自分の部分署名だけで、最終署名は持たない。
 
 use cggmp21::{
-    generic_ec::{coords::HasAffineX, Point},
+    DataToSign, ExecutionId, KeyShare, PartialSignature, Presignature,
+    generic_ec::{Point, coords::HasAffineX},
     security_level::SecurityLevel128,
     supported_curves::Secp256k1,
-    DataToSign, ExecutionId, KeyShare, PartialSignature, Presignature,
 };
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, VerifyingKey};
 use rand_core::{OsRng, RngCore};
@@ -123,7 +125,8 @@ async fn a_sends_partial_signature_only_to_b() {
 
     // B が承認した tx の signing hash(ここではダミー)
     let digest: [u8; 32] = Keccak256::digest(b"approved unsigned tx").into();
-    let data = DataToSign::<E>::from_scalar(cggmp21::generic_ec::Scalar::from_be_bytes_mod_order(digest));
+    let data =
+        DataToSign::<E>::from_scalar(cggmp21::generic_ec::Scalar::from_be_bytes_mod_order(digest));
 
     // 承認後に presignature を新しく作り、この 1 回だけ使う
     let mut presigs = presign(&shares, [A, B]).await.into_iter();
@@ -134,13 +137,14 @@ async fn a_sends_partial_signature_only_to_b() {
     let partial_a: PartialSignature<E> = presig_a.issue_partial_signature(data);
 
     // A の部分署名だけでは有効な署名にならない
-    let only_a = PartialSignature::combine(&[partial_a.clone()]).unwrap();
+    let only_a = PartialSignature::combine(std::slice::from_ref(&partial_a)).unwrap();
     assert!(only_a.verify(&public_key, &data).is_err());
 
     // B 側: 自分の部分署名と合成して検証する
     let partial_b = presig_b.issue_partial_signature(data);
     let sig = PartialSignature::combine(&[partial_a, partial_b]).unwrap();
-    sig.verify(&public_key, &data).expect("B obtains a valid signature");
+    sig.verify(&public_key, &data)
+        .expect("B obtains a valid signature");
 
     let (_sig, _recid) = to_recoverable(&sig, &digest, address);
 
@@ -155,7 +159,9 @@ async fn recovery_paths_can_sign() {
 
     for signers in [[A, C], [B, C]] {
         let digest: [u8; 32] = Keccak256::digest(format!("tx for {signers:?}")).into();
-        let data = DataToSign::<E>::from_scalar(cggmp21::generic_ec::Scalar::from_be_bytes_mod_order(digest));
+        let data = DataToSign::<E>::from_scalar(
+            cggmp21::generic_ec::Scalar::from_be_bytes_mod_order(digest),
+        );
         let partials: Vec<_> = presign(&shares, signers)
             .await
             .into_iter()

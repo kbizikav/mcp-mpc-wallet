@@ -1,16 +1,30 @@
 [package]
-name = "mpc"
+name = "mw-mpc"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# テスト専用: 1 つの鍵で署名するモック。閾値署名ではないので本番ビルドで有効にしてはいけない
+insecure-test-signer = ["dep:k256", "dep:rand_core"]
+
 [dependencies]
-cggmp21 = { version = "0.6.3", features = ["curve-secp256k1"] }
+alloy-primitives = { workspace = true, features = ["k256"] }
+cggmp21.workspace = true
+k256 = { workspace = true, optional = true }
+mw-core.workspace = true
+rand_core = { workspace = true, optional = true }
+thiserror.workspace = true
 
 [dev-dependencies]
-k256 = { version = "0.13", features = ["ecdsa"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
+k256.workspace = true
+mw-mpc = { path = ".", features = ["insecure-test-signer"] }
+rand_core.workspace = true
 round-based = { version = "0.4.1", features = ["derive", "sim-async"] }
 sha3 = "0.10"
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio.workspace = true
+
+[lints]
+workspace = true

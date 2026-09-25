@@ -1,0 +1,24 @@
+[package]
+name = "mw-tee"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# 開発用のモック(TEE なし)。本番ビルドで有効にしてはいけない
+insecure-mock = []
+
+[dependencies]
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+mw-tee = { path = ".", features = ["insecure-mock"] }
+
+[lints]
+workspace = true
