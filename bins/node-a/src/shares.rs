@@ -12,6 +12,8 @@ use mw_mpc::protocol::KeyShare;
 use secrecy::{ExposeSecret, SecretString};
 
 pub const SHARE_A_FILE: &str = "share-a.json";
+/// ウォレットのアドレス(公開情報)。オーナー用アプリはこれでウォレットの有無を判断する
+pub const WALLET_FILE: &str = "wallet.json";
 pub const SHARE_C_FILE: &str = "share-c.age";
 
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +51,23 @@ fn read(path: &Path) -> Result<Vec<u8>, ShareError> {
         path: path.display().to_string(),
         source,
     })
+}
+
+/// 鍵生成が終わったウォレットのアドレスを書く。
+pub fn save_wallet(dir: &Path, address: alloy_primitives::Address) -> Result<(), ShareError> {
+    let bytes = serde_json::to_vec_pretty(&serde_json::json!({ "address": address }))
+        .map_err(|e| ShareError::Malformed(e.to_string()))?;
+    std::fs::write(dir.join(WALLET_FILE), bytes).map_err(|source| ShareError::Io {
+        path: dir.join(WALLET_FILE).display().to_string(),
+        source,
+    })
+}
+
+/// 鍵生成済みならウォレットのアドレスを返す。
+pub fn load_wallet(dir: &Path) -> Option<alloy_primitives::Address> {
+    let bytes = std::fs::read(dir.join(WALLET_FILE)).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value["address"].as_str()?.parse().ok()
 }
 
 pub fn save_share_a(dir: &Path, share: &KeyShare) -> Result<(), ShareError> {

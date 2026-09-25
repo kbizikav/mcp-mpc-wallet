@@ -18,7 +18,6 @@ use mw_audit::{AuditLog, MemorySink};
 use mw_chain::{BlockInfo, MockChain};
 use mw_core::{AgentOutcome, CoarseReason, Policy, Proposal, UntrustedText};
 use mw_judge::ScriptedLlm;
-use mw_mpc::ThresholdSigner;
 use mw_mpc::protocol::{KeyShare, PARTY_A, PARTY_B, PARTY_C};
 use mw_node_a::session::{BConnection, keygen, propose, resume, user_request};
 use mw_node_a::shares::{load_share_c, save_share_c};
@@ -91,7 +90,11 @@ async fn keygen_over_tls() -> (KeyShare, KeyShare, KeyShare) {
 
     let b_side = async move {
         let tls = TlsAcceptor::from(server).accept(b_io).await.unwrap();
-        run_keygen(&mut Connection::new(tls), None).await.unwrap()
+        let mut conn = Connection::new(tls);
+        let output = run_keygen(&mut conn, None).await.unwrap();
+        let address = mw_mpc::protocol::address_of(&output.share.shared_public_key);
+        conn.send(&BtoA::KeygenStored { address }).await.unwrap();
+        output.share
     };
     let a_side = async move {
         let tls = TlsConnector::from(client)
@@ -99,7 +102,7 @@ async fn keygen_over_tls() -> (KeyShare, KeyShare, KeyShare) {
             .await
             .unwrap();
         let mut conn: BConnection<_> = Connection::new(tls);
-        keygen(&mut conn).await.unwrap()
+        keygen(&mut conn, None, &|_| {}).await.unwrap()
     };
     let (share_b, out) = tokio::join!(tokio::spawn(b_side), tokio::spawn(a_side));
     let (share_b, out) = (share_b.unwrap(), out.unwrap());
@@ -125,7 +128,7 @@ fn node(share_b: KeyShare, verdicts: &str) -> Node {
 
 fn node_with(share_b: KeyShare, verdicts: &str, with_policy: bool) -> Node {
     let signer = CggmpSigner::<DuplexStream>::new(share_b).unwrap();
-    let wallet = signer.address();
+    let wallet = signer.wallets()[0];
     let chain = MockChain::new(CHAIN_ID, BLOCK);
     chain.set_nonce(wallet, 0);
     let judgement = serde_json::json!({
@@ -201,7 +204,7 @@ async fn run_proposal(node: &Node, share_a: &KeyShare, p: Proposal) -> (AgentOut
         inner: a_io,
         seen: seen.clone(),
     };
-    let b_side = serve_connection(node, Connection::new(b_io), None, || {});
+    let b_side = serve_connection(node, Connection::new(b_io), None, None, || {});
     let a_side = async {
         let mut conn: BConnection<Tap> = Connection::new(tap);
         let outcome = propose(&mut conn, share_a, p).await.unwrap();
@@ -232,7 +235,7 @@ async fn keygen_propose_sign_and_submit() {
 
     // 承認される提案: A+B で署名し、B が送信する
     let node = node(share_b.clone(), "approve");
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.wallets()[0];
     let (outcome, b_to_a) = run_proposal(&node, &share_a, proposal(wallet)).await;
     let sent = node.parts().chain.sent();
     assert_eq!(sent.len(), 1);
@@ -268,6 +271,9 @@ async fn keygen_propose_sign_and_submit() {
 
     // EIP-712: A+B で署名し、署名が A(エージェント)に返る
     typed_data_signature(share_b.clone(), &share_a).await;
+
+    // serve のまま 2 つ目のウォレットを作る(パスキーはこの接続の上で登録される)
+    second_wallet_while_serving(share_b.clone()).await;
 
     // 拒否される提案: 署名要求は来ず、何も送信されない
     let node = self::node(share_b, "reject");
@@ -325,7 +331,7 @@ async fn with_b<T>(
     session: impl AsyncFnOnce(&mut BConnection<DuplexStream>) -> T,
 ) -> T {
     let (a_io, b_io) = tokio::io::duplex(1 << 20);
-    let b_side = serve_connection(node, Connection::new(b_io), None, || {});
+    let b_side = serve_connection(node, Connection::new(b_io), None, None, || {});
     let a_side = async {
         let mut conn: BConnection<DuplexStream> = Connection::new(a_io);
         let out = session(&mut conn).await;
@@ -340,7 +346,7 @@ async fn with_b<T>(
 async fn user_approval_over_the_wire(share_b: KeyShare, share_a: &KeyShare) {
     // 方針がないので、提案は必ず要確認になる
     let node = node_with(share_b, "approve", false);
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.wallets()[0];
     let mut passkey = SoftwarePasskey::generate(DEFAULT_RP_ID, DEFAULT_ORIGIN);
     node.register_passkey(wallet, passkey.registration())
         .unwrap();
@@ -387,7 +393,7 @@ async fn user_approval_over_the_wire(share_b: KeyShare, share_a: &KeyShare) {
 /// A の端末をなくしたとき: 凍結中でも、パスキー承認 + C のシェアで B と署名して全額を移せる。
 async fn recovery_with_b_and_c(share_b: KeyShare, share_c: &KeyShare) {
     let node = node_with(share_b, "reject", false);
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.wallets()[0];
     let mut passkey = SoftwarePasskey::generate(DEFAULT_RP_ID, DEFAULT_ORIGIN);
     node.register_passkey(wallet, passkey.registration())
         .unwrap();
@@ -432,7 +438,7 @@ async fn recovery_with_b_and_c(share_b: KeyShare, share_c: &KeyShare) {
 
 async fn typed_data_signature(share_b: KeyShare, share_a: &KeyShare) {
     let node = node_with(share_b, "approve", true);
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.wallets()[0];
     let typed = serde_json::json!({
         "types": {
             "EIP712Domain": [
@@ -468,4 +474,69 @@ async fn typed_data_signature(share_b: KeyShare, share_a: &KeyShare) {
     let digest = mw_chain::decode_typed_data(&typed).unwrap().digest;
     assert_eq!(sig.recover_address_from_prehash(&digest).unwrap(), wallet);
     assert!(node.parts().chain.sent().is_empty());
+}
+
+/// `serve` の接続で新しいウォレットを作る。パスキーがなければ断る。
+async fn second_wallet_while_serving(share_b: KeyShare) {
+    let node = node_with(share_b, "approve", false);
+    let first = node.parts().signer.wallets()[0];
+    let keygen_service = mw_node_b_server::server::KeygenService {
+        storage: Box::new(mw_tee::mock::InsecureMemoryStorage::default()),
+        busy: tokio::sync::Mutex::new(()),
+    };
+
+    let run = |passkey: Option<mw_policy::RegisteredPasskey>| {
+        let node = &node;
+        let keygen_service = &keygen_service;
+        async move {
+            let (a_io, b_io) = tokio::io::duplex(1 << 20);
+            let b_side = serve_connection(
+                node,
+                Connection::new(b_io),
+                None,
+                Some(keygen_service),
+                || {},
+            );
+            let a_side = async {
+                let mut conn: BConnection<DuplexStream> = Connection::new(a_io);
+                let out = keygen(&mut conn, passkey, &|_| {}).await;
+                drop(conn);
+                out
+            };
+            let (served, out) = tokio::join!(b_side, a_side);
+            let _ = served;
+            out
+        }
+    };
+
+    // パスキーのない鍵生成は断る
+    assert!(run(None).await.is_err());
+    assert_eq!(node.parts().signer.wallets(), vec![first]);
+
+    let mut passkey = SoftwarePasskey::generate(DEFAULT_RP_ID, DEFAULT_ORIGIN);
+    let out = run(Some(passkey.registration())).await.unwrap();
+    let second = out.address;
+    assert_ne!(second, first);
+    let mut wallets = vec![first, second];
+    wallets.sort();
+    assert_eq!(node.parts().signer.wallets(), wallets);
+    assert!(
+        keygen_service
+            .storage
+            .exists(&mw_node_b_server::share_label(second))
+    );
+
+    // 登録されたパスキーで、新しいウォレットのオーナー用の一覧を開ける
+    let view = node
+        .handle_user_request(UserRequest::Signed {
+            signed: passkey.sign(UserOperation::ListPending {
+                wallet: second,
+                issued_at: 1_700_000_000,
+            }),
+        })
+        .await;
+    assert!(
+        matches!(view, UserResponse::PendingRequests { .. }),
+        "{view:?}"
+    );
 }

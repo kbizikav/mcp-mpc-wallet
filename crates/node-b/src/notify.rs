@@ -49,6 +49,22 @@ pub enum UserNotice {
     },
 }
 
+impl UserNotice {
+    pub fn wallet(&self) -> Address {
+        match self {
+            UserNotice::NeedsConfirmation { wallet, .. }
+            | UserNotice::Rejected { wallet, .. }
+            | UserNotice::Frozen { wallet, .. }
+            | UserNotice::Submitted { wallet, .. }
+            | UserNotice::Signed { wallet, .. }
+            | UserNotice::ApprovedByUser { wallet, .. }
+            | UserNotice::PolicyUpdated { wallet, .. }
+            | UserNotice::Unfrozen { wallet }
+            | UserNotice::SubmissionFailed { wallet, .. } => *wallet,
+        }
+    }
+}
+
 pub trait UserNotifier: Send + Sync {
     fn notify(&self, notice: UserNotice);
 }

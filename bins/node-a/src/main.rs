@@ -19,7 +19,7 @@ use mw_mpc::protocol::address_of;
 use mw_node_a::mcp::{ProposeParams, WalletConfig, WalletServer};
 use mw_node_a::session::BEndpoint;
 use mw_node_a::session::{connect, keygen, propose, resume};
-use mw_node_a::shares::{load_share_a, save_share_a, save_share_c};
+use mw_node_a::shares::{load_share_a, save_share_a, save_share_c, save_wallet};
 use mw_node_a::txbuild::{TxParams, build, encode_unsigned};
 
 use rmcp::ServiceExt;
@@ -150,9 +150,10 @@ async fn run_keygen(conn: &Conn, passphrase_file: Option<&Path>) -> anyhow::Resu
     }
     eprintln!("generating primes and running keygen with B (this takes a while)...");
     let mut b = connect(&endpoint(conn)?).await?;
-    let out = keygen(&mut b).await?;
+    let out = keygen(&mut b, None, &|step| eprintln!("  {step:?}")).await?;
     save_share_a(&conn.data_dir, &out.share_a)?;
     save_share_c(&conn.data_dir, &out.share_c, &passphrase)?;
+    save_wallet(&conn.data_dir, out.address)?;
     println!("{}", out.address);
     Ok(())
 }

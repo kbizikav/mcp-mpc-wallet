@@ -32,10 +32,12 @@ pub enum SignError {
 /// B 側から見た閾値署名。最終署名を得るのは呼び出し側(B)だけ。
 ///
 /// `Peer` は署名に参加する相手(A)とのセッション。
+/// 1 つの B が複数のウォレットのシェアを持てる。
 pub trait ThresholdSigner: Send + Sync {
     type Peer: Send;
 
-    fn address(&self) -> Address;
+    /// このウォレットのシェアを持っているか。
+    fn holds(&self, wallet: Address) -> bool;
 
     fn sign(
         &self,

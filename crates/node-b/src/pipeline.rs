@@ -55,8 +55,9 @@ impl NodeConfig {
 pub const DEFAULT_RP_ID: &str = "mcp-mpc-wallet.local";
 pub const DEFAULT_ORIGIN: &str = "https://mcp-mpc-wallet.local";
 
-/// オーナー用の一覧に残す出来事の数
-const ACTIVITY_LIMIT: usize = 50;
+/// 出来事を残す数(全ウォレット合計)と、1 ウォレットの一覧に出す数
+const ACTIVITY_LIMIT: usize = 500;
+pub(crate) const ACTIVITY_PER_WALLET: usize = 50;
 
 /// 要確認の要求は、この時間を過ぎたら捨てる
 pub(crate) const PENDING_TTL_SECS: u64 = 3_600;
@@ -156,7 +157,7 @@ pub struct JudgeNode<C, S, L, T, N, K, A> {
     pub(crate) pending: Mutex<HashMap<B256, Pending>>,
     pub(crate) passkeys: Mutex<HashMap<Address, RegisteredPasskey>>,
     /// ユーザーに通知した直近の出来事(オーナー用の一覧で見せる)
-    pub(crate) activity: Mutex<VecDeque<(u64, UserNotice)>>,
+    pub(crate) activity: Mutex<VecDeque<(u64, Address, UserNotice)>>,
     /// 提案とユーザー操作を 1 件ずつ処理する(nonce の競合を避ける)
     pub(crate) serial: tokio::sync::Mutex<()>,
 }
@@ -197,7 +198,7 @@ where
             if activity.len() == ACTIVITY_LIMIT {
                 activity.pop_front();
             }
-            activity.push_back((self.parts.clock.now_unix(), notice.clone()));
+            activity.push_back((self.parts.clock.now_unix(), notice.wallet(), notice.clone()));
         }
         self.parts.notifier.notify(notice);
     }
@@ -206,8 +207,9 @@ where
         &self.parts
     }
 
-    pub fn wallet(&self) -> Address {
-        self.parts.signer.address()
+    /// このウォレットのシェアを持っているか。
+    pub fn holds(&self, wallet: Address) -> bool {
+        self.parts.signer.holds(wallet)
     }
 
     /// パスキー検証を通さずに方針を登録する(不変条件 6 を満たさない)。テスト専用。
@@ -268,7 +270,7 @@ where
     /// 受け付けない提案なら、その結果を返す。
     fn admit(&self, wallet: Address) -> Option<AgentOutcome> {
         // 別のウォレット宛ての提案は、レート制限の状態を作る前に弾く
-        if wallet != self.wallet() {
+        if !self.holds(wallet) {
             return Some(AgentOutcome::Rejected {
                 reason: CoarseReason::InvalidRequest,
             });

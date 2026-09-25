@@ -9,7 +9,6 @@ use mw_chain::calls::{encode_erc20_approve, encode_erc20_transfer};
 use mw_chain::{BlockInfo, MockChain};
 use mw_core::{AgentOutcome, CoarseReason, Policy, Proposal, UntrustedText, Verdict};
 use mw_judge::{INSTRUCTIONS, ScriptedLlm};
-use mw_mpc::ThresholdSigner;
 use mw_mpc::insecure_test::InsecureSingleKeySigner;
 use mw_node_b::{
     Components, GuardConfig, JudgeNode, ManualClock, NodeConfig, RecordingNotifier, UserNotice,

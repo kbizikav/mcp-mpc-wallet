@@ -4,19 +4,23 @@
 //! サーバは操作を組み立てて challenge を返し、ブラウザが作った assertion を B に中継するだけで、
 //! 署名の鍵には触れない。B への接続は `--expected-pcr0` を指定すると attestation で検証する。
 //!
+//! `--data-dir` にウォレットがなければ初期設定モードで起動し、画面から鍵生成を行う。
+//! 鍵生成の要求にはブラウザで作ったパスキーを含め、B は attestation を検証した同じ接続の上で
+//! それを最初のパスキーとして登録する。
+//!
 //! ```text
-//! mw-owner --node-b <host:port> --tls-dir <dir> --wallet <addr> [--expected-pcr0 <hex>]
+//! mw-owner --node-b <host:port> --tls-dir <dir> --data-dir <dir> [--expected-pcr0 <hex>]
 //!          [--legacy-passkey <file>]   # ソフトウェアパスキーからブラウザのパスキーへ移すとき
 //! ```
 //! ブラウザでは http://localhost:8787 を開く(パスキーの RP ID が `localhost` なので)。
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::{Address, B256, Bytes, utils::format_ether};
-use anyhow::Context;
+use anyhow::{Context, bail};
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -27,18 +31,23 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use clap::Parser;
 use mw_chain::JsonRpcClient;
 use mw_core::Policy;
-use mw_node_a::session::{BEndpoint, connect, user_request};
+use mw_node_a::session::{BEndpoint, KeygenStep, connect, keygen, user_request};
+use mw_node_a::shares::{
+    SHARE_A_FILE, SHARE_C_FILE, load_wallet, save_share_a, save_share_c, save_wallet,
+};
 use mw_policy::software::SoftwarePasskey;
 use mw_policy::{
     PasskeyAssertion, RegisteredPasskey, SignedUserOperation, UserOperation, UserRequest,
     UserResponse,
 };
-use secrecy::SecretString;
-use serde::Deserialize;
+use secrecy::{ExposeSecret, SecretString};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 /// Base Sepolia
 const CHAIN_ID: u64 = 84532;
+/// 復旧用パスフレーズの最短の長さ(文字数)
+const MIN_PASSPHRASE_CHARS: usize = 12;
 
 #[derive(Parser)]
 #[command(name = "mw-owner", about = "MCP MPC wallet owner app")]
@@ -47,8 +56,9 @@ struct Cli {
     node_b: String,
     #[arg(long)]
     tls_dir: PathBuf,
+    /// A のシェアとウォレットのアドレスを置くディレクトリ(`mw-node-a` と同じもの)
     #[arg(long)]
-    wallet: Address,
+    data_dir: PathBuf,
     /// B が Nitro Enclave で動くとき、期待するイメージの PCR0(16 進)
     #[arg(long)]
     expected_pcr0: Option<String>,
@@ -59,12 +69,44 @@ struct Cli {
     legacy_passkey: Option<PathBuf>,
 }
 
+/// 画面から始めた鍵生成の進み具合。
+#[derive(Clone, Default, Serialize)]
+struct SetupJob {
+    running: bool,
+    step: Option<KeygenStep>,
+    error: Option<String>,
+    address: Option<Address>,
+}
+
 struct AppState {
     endpoint: BEndpoint,
-    wallet: Address,
+    node_b: String,
+    tls_dir: PathBuf,
+    data_dir: PathBuf,
+    /// 鍵生成が終わるまでは `None`
+    wallet: RwLock<Option<Address>>,
+    setup: Mutex<SetupJob>,
     pcr0: Option<String>,
     rpc: Option<JsonRpcClient>,
     legacy_passkey: Option<PathBuf>,
+}
+
+impl AppState {
+    fn wallet(&self) -> Result<Address, ApiError> {
+        self.wallet
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ok_or_else(|| {
+                ApiError(
+                    StatusCode::CONFLICT,
+                    "no wallet yet: finish the setup".into(),
+                )
+            })
+    }
+
+    fn update_setup(&self, f: impl FnOnce(&mut SetupJob)) {
+        f(&mut self.setup.lock().unwrap_or_else(PoisonError::into_inner));
+    }
 }
 
 type Shared = Arc<AppState>;
@@ -123,15 +165,8 @@ struct Status {
     passkey_registered: bool,
 }
 
-async fn b_status(state: &AppState) -> Result<Status, ApiError> {
-    match send(
-        state,
-        UserRequest::Status {
-            wallet: state.wallet,
-        },
-    )
-    .await?
-    {
+async fn b_status(state: &AppState, wallet: Address) -> Result<Status, ApiError> {
+    match send(state, UserRequest::Status { wallet }).await? {
         UserResponse::Status {
             frozen,
             freeze_epoch,
@@ -153,25 +188,204 @@ async fn b_status(state: &AppState) -> Result<Status, ApiError> {
 }
 
 async fn status(State(state): State<Shared>) -> Result<Json<serde_json::Value>, ApiError> {
-    let b = b_status(&state).await?;
+    let wallet = state.wallet()?;
+    let b = b_status(&state, wallet).await?;
     let balance = match &state.rpc {
-        Some(rpc) => rpc.balance(state.wallet).await.ok().map(format_ether),
+        Some(rpc) => rpc.balance(wallet).await.ok().map(format_ether),
         None => None,
     };
     Ok(Json(json!({
-        "wallet": state.wallet,
+        "wallet": wallet,
         "chain": "Base Sepolia",
         "chain_id": CHAIN_ID,
         "balance_eth": balance,
         "attested": state.pcr0.is_some(),
         "pcr0": state.pcr0,
+        "node_b": state.node_b,
         "frozen": b.frozen,
         "freeze_epoch": b.freeze_epoch,
         "policy_version": b.policy_version,
         "passkey_registered": b.passkey_registered,
         "legacy_passkey": state.legacy_passkey.is_some(),
+        "recovery_share": state.data_dir.join(SHARE_C_FILE).exists(),
     })))
 }
+
+// ---- 初期設定 ----------------------------------------------------------------
+
+/// 初期設定の画面が最初に呼ぶ。B に接続して(enclave なら attestation を検証して)状態を返す。
+async fn setup_state(State(state): State<Shared>) -> Json<serde_json::Value> {
+    let wallet = *state.wallet.read().unwrap_or_else(PoisonError::into_inner);
+    let judge = match connect(&state.endpoint).await {
+        Ok(conn) => {
+            let _ = conn.close().await;
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
+    };
+    let job = state
+        .setup
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    Json(json!({
+        "wallet": wallet,
+        "node_b": state.node_b,
+        "attested": state.pcr0.is_some(),
+        "pcr0": state.pcr0,
+        "judge_reachable": judge.is_ok(),
+        "judge_error": judge.err(),
+        "job": job,
+    }))
+}
+
+#[derive(Deserialize)]
+struct KeygenRequest {
+    passphrase: SecretString,
+    credential_id: String,
+    /// `AuthenticatorAttestationResponse.getPublicKey()`(SPKI DER)
+    spki: String,
+}
+
+/// 鍵生成を始める。数十秒かかるので、進み具合は `/api/setup/progress` で返す。
+async fn setup_keygen(
+    State(state): State<Shared>,
+    Json(request): Json<KeygenRequest>,
+) -> Result<Json<SetupJob>, ApiError> {
+    if state.wallet().is_ok() {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "a wallet already exists".into(),
+        ));
+    }
+    if request.passphrase.expose_secret().chars().count() < MIN_PASSPHRASE_CHARS {
+        return Err(bad_request(format!(
+            "the recovery passphrase needs at least {MIN_PASSPHRASE_CHARS} characters"
+        )));
+    }
+    // 途中で失敗したときに、B だけにウォレットが残るのを避けるため、先に確かめる
+    if state.data_dir.join(SHARE_A_FILE).exists() || state.data_dir.join(SHARE_C_FILE).exists() {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            format!("{} already holds key shares", state.data_dir.display()),
+        ));
+    }
+    let passkey = RegisteredPasskey::from_spki(
+        decode("credential_id", &request.credential_id)?,
+        &decode("spki", &request.spki)?,
+    )?;
+    {
+        let mut job = state.setup.lock().unwrap_or_else(PoisonError::into_inner);
+        if job.running {
+            return Err(ApiError(
+                StatusCode::CONFLICT,
+                "keygen is already running".into(),
+            ));
+        }
+        *job = SetupJob {
+            running: true,
+            ..SetupJob::default()
+        };
+    }
+    let task_state = state.clone();
+    tokio::spawn(async move {
+        let state = task_state;
+        let result = run_setup_keygen(&state, passkey, request.passphrase).await;
+        state.update_setup(|job| {
+            job.running = false;
+            match result {
+                Ok(address) => job.address = Some(address),
+                Err(e) => job.error = Some(format!("{e:#}")),
+            }
+        });
+    });
+    Ok(Json(
+        state
+            .setup
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone(),
+    ))
+}
+
+async fn run_setup_keygen(
+    state: &Shared,
+    passkey: RegisteredPasskey,
+    passphrase: SecretString,
+) -> anyhow::Result<Address> {
+    std::fs::create_dir_all(&state.data_dir)?;
+    let mut conn = connect(&state.endpoint)
+        .await
+        .context("connecting to the judge node")?;
+    let progress = |step| state.update_setup(|job| job.step = Some(step));
+    let out = keygen(&mut conn, Some(passkey), &progress).await?;
+    let _ = conn.close().await;
+    save_share_a(&state.data_dir, &out.share_a)?;
+    save_share_c(&state.data_dir, &out.share_c, &passphrase)?;
+    save_wallet(&state.data_dir, out.address)?;
+    *state.wallet.write().unwrap_or_else(PoisonError::into_inner) = Some(out.address);
+    eprintln!("created wallet {}", out.address);
+    Ok(out.address)
+}
+
+async fn setup_progress(State(state): State<Shared>) -> Json<SetupJob> {
+    Json(
+        state
+            .setup
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone(),
+    )
+}
+
+/// シェルにそのまま貼れるように引数を引用する。
+fn shell_quote(arg: &str) -> String {
+    if !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@,+".contains(c))
+    {
+        arg.to_owned()
+    } else {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
+}
+
+fn absolute(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Claude Code に MCP サーバを登録するコマンド。API キーはシェルの変数のまま残す。
+async fn mcp_command(State(state): State<Shared>) -> Json<serde_json::Value> {
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("mw-node-a")))
+        .unwrap_or_else(|| PathBuf::from("mw-node-a"));
+    let mut args = vec![
+        binary.display().to_string(),
+        "mcp".into(),
+        "--node-b".into(),
+        state.node_b.clone(),
+        "--tls-dir".into(),
+        absolute(&state.tls_dir).display().to_string(),
+        "--data-dir".into(),
+        absolute(&state.data_dir).display().to_string(),
+    ];
+    if let Some(pcr0) = &state.pcr0 {
+        args.extend(["--expected-pcr0".into(), pcr0.clone()]);
+    }
+    let args: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
+    let command = format!(
+        "claude mcp add mcp-mpc-wallet --scope user -e ALCHEMY_API_KEY=\"$ALCHEMY_API_KEY\" -- {}",
+        args.join(" ")
+    );
+    Json(json!({
+        "command": command,
+        "binary_exists": binary.exists(),
+    }))
+}
+
+// ---- パスキーで署名する操作 ------------------------------------------------------
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -187,14 +401,17 @@ async fn challenge(
     State(state): State<Shared>,
     Json(request): Json<ChallengeRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let wallet = state.wallet;
+    let wallet = state.wallet()?;
     let operation = match request {
         ChallengeRequest::SetPolicy { text } => {
             let text = text.trim().to_owned();
             if text.is_empty() {
                 return Err(bad_request("the policy is empty"));
             }
-            let version = b_status(&state).await?.policy_version.map_or(1, |v| v + 1);
+            let version = b_status(&state, wallet)
+                .await?
+                .policy_version
+                .map_or(1, |v| v + 1);
             UserOperation::SetPolicy {
                 policy: Policy {
                     wallet,
@@ -208,7 +425,7 @@ async fn challenge(
         }
         ChallengeRequest::Unfreeze => UserOperation::Unfreeze {
             wallet,
-            freeze_epoch: b_status(&state).await?.freeze_epoch,
+            freeze_epoch: b_status(&state, wallet).await?.freeze_epoch,
         },
         ChallengeRequest::View => UserOperation::ListPending {
             wallet,
@@ -254,15 +471,8 @@ async fn submit(
 }
 
 async fn freeze(State(state): State<Shared>) -> Result<Json<UserResponse>, ApiError> {
-    reply(
-        send(
-            &state,
-            UserRequest::Freeze {
-                wallet: state.wallet,
-            },
-        )
-        .await?,
-    )
+    let wallet = state.wallet()?;
+    reply(send(&state, UserRequest::Freeze { wallet }).await?)
 }
 
 #[derive(Deserialize)]
@@ -274,11 +484,12 @@ async fn reject(
     State(state): State<Shared>,
     Json(request): Json<RejectRequest>,
 ) -> Result<Json<UserResponse>, ApiError> {
+    let wallet = state.wallet()?;
     reply(
         send(
             &state,
             UserRequest::RejectPending {
-                wallet: state.wallet,
+                wallet,
                 request_id: request.request_id,
             },
         )
@@ -298,6 +509,7 @@ async fn adopt(
     State(state): State<Shared>,
     Json(request): Json<AdoptRequest>,
 ) -> Result<Json<UserResponse>, ApiError> {
+    let wallet = state.wallet()?;
     let path = state.legacy_passkey.as_ref().ok_or_else(|| {
         bad_request("start mw-owner with --legacy-passkey to adopt a new passkey")
     })?;
@@ -307,7 +519,7 @@ async fn adopt(
     )?;
     let mut legacy: SoftwarePasskey = serde_json::from_slice(&std::fs::read(path)?)?;
     let signed = legacy.sign(UserOperation::RotatePasskey {
-        wallet: state.wallet,
+        wallet,
         new_passkey,
     });
     // 署名カウンタが進んだので、送る前に保存し直す
@@ -315,11 +527,21 @@ async fn adopt(
     reply(send(&state, UserRequest::Signed { signed }).await?)
 }
 
+// ---- 配信 --------------------------------------------------------------------
+
 fn asset(content_type: &'static str, body: &'static str) -> Response {
-    ([(header::CONTENT_TYPE, content_type)], body).into_response()
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 fn router(state: Shared) -> Router {
+    const JS: &str = "text/javascript; charset=utf-8";
     Router::new()
         .route(
             "/",
@@ -332,12 +554,15 @@ fn router(state: Shared) -> Router {
         )
         .route(
             "/app.js",
-            get(|| async {
-                asset(
-                    "text/javascript; charset=utf-8",
-                    include_str!("../static/app.js"),
-                )
-            }),
+            get(|| async { asset(JS, include_str!("../static/app.js")) }),
+        )
+        .route(
+            "/setup.js",
+            get(|| async { asset(JS, include_str!("../static/setup.js")) }),
+        )
+        .route(
+            "/ui.js",
+            get(|| async { asset(JS, include_str!("../static/ui.js")) }),
         )
         .route(
             "/style.css",
@@ -349,6 +574,10 @@ fn router(state: Shared) -> Router {
             }),
         )
         .route("/api/status", get(status))
+        .route("/api/setup/state", get(setup_state))
+        .route("/api/setup/keygen", post(setup_keygen))
+        .route("/api/setup/progress", get(setup_progress))
+        .route("/api/mcp-command", get(mcp_command))
         .route("/api/challenge", post(challenge))
         .route("/api/submit", post(submit))
         .route("/api/freeze", post(freeze))
@@ -368,9 +597,21 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let endpoint = BEndpoint::from_files(&cli.node_b, &cli.tls_dir, cli.expected_pcr0.as_deref())
         .context("loading the TLS files")?;
+    let wallet = load_wallet(&cli.data_dir);
+    if wallet.is_none() && cli.data_dir.join(SHARE_A_FILE).exists() {
+        bail!(
+            "{} holds share A but no {}; write the wallet address there first",
+            cli.data_dir.display(),
+            mw_node_a::shares::WALLET_FILE
+        );
+    }
     let state = Arc::new(AppState {
         endpoint,
-        wallet: cli.wallet,
+        node_b: cli.node_b,
+        tls_dir: cli.tls_dir,
+        data_dir: cli.data_dir,
+        wallet: RwLock::new(wallet),
+        setup: Mutex::new(SetupJob::default()),
         pcr0: cli.expected_pcr0,
         rpc: rpc().await,
         legacy_passkey: cli.legacy_passkey,
@@ -378,10 +619,27 @@ async fn main() -> anyhow::Result<()> {
     // 自分の PC からだけ使う
     let addr = SocketAddr::from(([127, 0, 0, 1], cli.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    eprintln!(
-        "owner app for {} on http://localhost:{}",
-        cli.wallet, cli.port
-    );
+    match wallet {
+        Some(wallet) => eprintln!("owner app for {wallet} on http://localhost:{}", cli.port),
+        None => eprintln!(
+            "no wallet yet: open http://localhost:{} to set one up",
+            cli.port
+        ),
+    }
     axum::serve(listener, router(state)).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_quote;
+
+    #[test]
+    fn quotes_only_when_needed() {
+        assert_eq!(shell_quote("/opt/mw/data"), "/opt/mw/data");
+        assert_eq!(shell_quote("3.112.217.26:7443"), "3.112.217.26:7443");
+        assert_eq!(shell_quote("/Users/me/My Wallet"), "'/Users/me/My Wallet'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(shell_quote(""), "''");
+    }
 }

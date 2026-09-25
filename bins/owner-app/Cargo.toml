@@ -20,7 +20,7 @@ mw-chain.workspace = true
 mw-core.workspace = true
 mw-node-a.workspace = true
 mw-policy = { workspace = true, features = ["software-passkey"] }
-secrecy.workspace = true
+secrecy = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "rt-multi-thread"] }

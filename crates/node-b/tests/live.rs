@@ -19,7 +19,6 @@ use mw_chain::calls::encode_erc20_approve;
 use mw_chain::{BlockInfo, ChainClient, ChainError, JsonRpcClient};
 use mw_core::{AgentOutcome, Policy, Proposal, UntrustedText, Verdict};
 use mw_judge::{OpenAiClient, OpenAiConfig, build_request, judge};
-use mw_mpc::ThresholdSigner;
 use mw_mpc::insecure_test::InsecureSingleKeySigner;
 use mw_node_b::{Components, JudgeNode, NodeConfig, RecordingNotifier, SystemClock, UserNotice};
 use mw_simulator::{SimulationRequest, Simulator, TenderlyConfig, TenderlySimulator};

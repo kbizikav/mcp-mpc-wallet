@@ -1,7 +1,7 @@
 use alloy_primitives::{Address, B256, Bytes};
 use mw_core::{AgentOutcome, Proposal, TypedDataProposal};
 use mw_mpc::net::WireMsg;
-use mw_policy::{SignedUserOperation, UserRequest, UserResponse};
+use mw_policy::{RegisteredPasskey, SignedUserOperation, UserRequest, UserResponse};
 use serde::{Deserialize, Serialize};
 
 /// A(ユーザーの PC)から B(判定ノード)へ。
@@ -37,6 +37,9 @@ pub enum AtoB {
     /// B のシェアがまだないときだけ受け付ける鍵生成
     Keygen {
         session: B256,
+        /// 新しいウォレットの最初のパスキー。attestation を検証した接続の上で登録される
+        #[serde(default)]
+        passkey: Option<RegisteredPasskey>,
     },
     /// 鍵生成が終わり、A 側で得た公開鍵のアドレス(B と一致を確認する)
     KeygenResult {
@@ -70,6 +73,10 @@ pub enum BtoA {
         document: Bytes,
     },
     KeygenDone {
+        address: Address,
+    },
+    /// B がシェアを封印し、ウォレットを使える状態にした
+    KeygenStored {
         address: Address,
     },
     Mpc {

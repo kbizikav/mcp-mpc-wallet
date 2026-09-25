@@ -10,8 +10,16 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use mw_mpc::protocol::{PARTY_A, PARTY_C};
 
-use crate::AttestationService;
+use crate::keygen::keygen_after_request;
 use crate::signer::{AConnection, CggmpSigner, PeerSession};
+use crate::{AttestationService, store_share};
+
+/// `serve` の中で新しいウォレットの鍵生成を受け付けるための部品。
+pub struct KeygenService {
+    pub storage: Box<dyn mw_tee::SealedStorage>,
+    /// 鍵生成は重いので 1 件ずつ
+    pub busy: tokio::sync::Mutex<()>,
+}
 
 /// 1 本の接続で届く要求を順に処理する。署名済み tx は返さず、結果だけを返す。
 ///
@@ -20,6 +28,7 @@ pub async fn serve_connection<C, Sim, L, N, K, A, S>(
     node: &JudgeNode<C, Sim, L, CggmpSigner<S>, N, K, A>,
     conn: AConnection<S>,
     attestation: Option<&AttestationService>,
+    keygen: Option<&KeygenService>,
     after_request: impl Fn(),
 ) -> Result<(), WireError>
 where
@@ -50,6 +59,50 @@ where
                     None => BtoA::Error {
                         message: "this node does not run in an enclave".into(),
                     },
+                };
+                session.conn.send(&reply).await?;
+            }
+            AtoB::Keygen {
+                session: id,
+                passkey,
+            } => {
+                let reply = match (keygen, passkey) {
+                    (None, _) => BtoA::Error {
+                        message: "this node does not accept new wallets".into(),
+                    },
+                    (Some(_), None) => BtoA::Error {
+                        message: "a new wallet needs the owner's passkey".into(),
+                    },
+                    (Some(service), Some(passkey)) => {
+                        let Ok(_busy) = service.busy.try_lock() else {
+                            session
+                                .conn
+                                .send(&BtoA::Error {
+                                    message: "another wallet is being created; try again shortly"
+                                        .into(),
+                                })
+                                .await?;
+                            continue;
+                        };
+                        let share = keygen_after_request(&mut session.conn, id)
+                            .await
+                            .map_err(|e| WireError::Unexpected(format!("keygen: {e}")))?;
+                        let stored = store_share(&*service.storage, &node.parts().signer, share)
+                            .map_err(|e| e.to_string())
+                            .and_then(|wallet| {
+                                node.register_passkey(wallet, passkey)
+                                    .map(|()| wallet)
+                                    .map_err(|e| e.to_string())
+                            });
+                        match stored {
+                            Ok(address) => {
+                                after_request();
+                                eprintln!("created wallet {address}");
+                                BtoA::KeygenStored { address }
+                            }
+                            Err(message) => BtoA::Error { message },
+                        }
+                    }
                 };
                 session.conn.send(&reply).await?;
             }

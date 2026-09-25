@@ -18,8 +18,6 @@ use clap::{Parser, Subcommand};
 use mw_audit::{AuditLog, JsonlSink};
 use mw_chain::JsonRpcClient;
 use mw_judge::{OpenAiClient, OpenAiConfig};
-use mw_mpc::ThresholdSigner;
-use mw_mpc::protocol::KeyShare;
 use mw_node_b::{
     Components, DEFAULT_ORIGIN, DEFAULT_RP_ID, JudgeNode, NodeConfig, SystemClock,
     UserStateSnapshot,
@@ -29,18 +27,21 @@ use mw_policy::RelyingParty;
 fn default_rps() -> Vec<RelyingParty> {
     vec![RelyingParty::new(DEFAULT_RP_ID, DEFAULT_ORIGIN)]
 }
+use alloy_primitives::Address;
 use mw_node_b_server::keygen::run_keygen;
 use mw_node_b_server::net::{Listen, RawListener, RawStream};
 use mw_node_b_server::notifier::JsonlNotifier;
+use mw_node_b_server::server::KeygenService;
 use mw_node_b_server::server::serve_connection;
-use mw_node_b_server::{AttestationService, CggmpSigner, SHARE_LABEL};
+use mw_node_b_server::{AttestationService, CggmpSigner, load_shares, store_share};
 use mw_simulator::{TenderlyConfig, TenderlySimulator};
 use mw_tee::SealedStorage;
 use mw_tee::kms::{KmsCredentials, KmsToolSealedStorage};
 use mw_tee::mock::InsecureFileStorage;
+use mw_wire::BtoA;
 use mw_wire::Connection;
 use mw_wire::tls::{read_pem, server_config, server_config_with_ephemeral_cert};
-use secrecy::{ExposeSecret, SecretSlice, SecretString};
+use secrecy::SecretString;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 
@@ -82,6 +83,9 @@ enum Command {
     RegisterPasskey {
         #[arg(long)]
         data_dir: PathBuf,
+        /// 対象のウォレット(B が 1 つしか持たなければ省略できる)
+        #[arg(long)]
+        wallet: Option<Address>,
         #[command(flatten)]
         seal: SealArgs,
         /// パスキーの公開情報(credential_id, public_key)の JSON
@@ -189,6 +193,7 @@ fn env_var(name: &str) -> anyhow::Result<String> {
     std::env::var(name).with_context(|| format!("{name} is not set"))
 }
 
+/// A からの接続を 1 本受け付けて、新しいウォレットを 1 つ作る。
 async fn keygen(
     listen: Listen,
     tls_dir: &Path,
@@ -197,9 +202,6 @@ async fn keygen(
     enclave_tls: bool,
 ) -> anyhow::Result<()> {
     let storage = storage(data_dir, seal)?;
-    if storage.exists(SHARE_LABEL) {
-        bail!("B already has a key share; refusing to run keygen again");
-    }
     let (acceptor, attestation) = tls_setup(tls_dir, enclave_tls)?;
     let listener = RawListener::bind(&listen).await?;
     eprintln!("waiting for A on {listen} to run keygen");
@@ -207,17 +209,18 @@ async fn keygen(
     eprintln!("keygen with {peer}");
     let tls = acceptor.accept(tcp).await?;
     let mut conn = Connection::new(tls);
-    let share = run_keygen(&mut conn, attestation.as_deref()).await?;
-    let bytes = serde_json::to_vec(&share)?;
-    storage.seal(SHARE_LABEL, &SecretSlice::from(bytes))?;
-    let signer = CggmpSigner::<Stream>::new(share)?;
-    println!("{}", signer.address());
+    let output = run_keygen(&mut conn, attestation.as_deref()).await?;
+    let signer = CggmpSigner::<Stream>::default();
+    let wallet = store_share(&*storage, &signer, output.share)?;
+    if let Some(passkey) = output.passkey {
+        let mut state = load_user_state(data_dir)?;
+        state.passkeys.retain(|(w, _)| *w != wallet);
+        state.passkeys.push((wallet, passkey));
+        save_user_state(data_dir, &state)?;
+    }
+    conn.send(&BtoA::KeygenStored { address: wallet }).await?;
+    println!("{wallet}");
     Ok(())
-}
-
-fn load_share(storage: &dyn SealedStorage) -> anyhow::Result<KeyShare> {
-    let sealed = storage.unseal(SHARE_LABEL)?;
-    Ok(serde_json::from_slice(sealed.expose_secret())?)
 }
 
 const USER_STATE_FILE: &str = "user-state.json";
@@ -240,9 +243,20 @@ fn save_user_state(data_dir: &Path, state: &UserStateSnapshot) -> anyhow::Result
     Ok(())
 }
 
-fn register_passkey(data_dir: &Path, passkey: &Path, seal: &SealArgs) -> anyhow::Result<()> {
-    let signer = CggmpSigner::<Stream>::new(load_share(&*storage(data_dir, seal)?)?)?;
-    let wallet = signer.address();
+fn register_passkey(
+    data_dir: &Path,
+    passkey: &Path,
+    wallet: Option<Address>,
+    seal: &SealArgs,
+) -> anyhow::Result<()> {
+    let signer = CggmpSigner::<Stream>::default();
+    let wallets = load_shares(&*storage(data_dir, seal)?, &signer)?;
+    let wallet = match (wallet, wallets.as_slice()) {
+        (Some(w), _) if wallets.contains(&w) => w,
+        (Some(w), _) => bail!("B has no key share for {w}"),
+        (None, [only]) => *only,
+        (None, _) => bail!("B holds {} wallets; pass --wallet", wallets.len()),
+    };
     let registration: mw_policy::RegisteredPasskey =
         serde_json::from_slice(&std::fs::read(passkey)?)?;
     let mut state = load_user_state(data_dir)?;
@@ -263,8 +277,13 @@ async fn serve(
     seal: &SealArgs,
     enclave_tls: bool,
 ) -> anyhow::Result<()> {
-    let signer = CggmpSigner::<Stream>::new(load_share(&*storage(data_dir, seal)?)?)?;
-    let wallet = signer.address();
+    let storage = storage(data_dir, seal)?;
+    let signer = CggmpSigner::<Stream>::default();
+    let wallets = load_shares(&*storage, &signer)?;
+    let keygen = Arc::new(KeygenService {
+        storage,
+        busy: tokio::sync::Mutex::new(()),
+    });
 
     let rpc_url = SecretString::from(format!(
         "https://base-sepolia.g.alchemy.com/v2/{}",
@@ -303,13 +322,17 @@ async fn serve(
 
     let (acceptor, attestation) = tls_setup(tls_dir, enclave_tls)?;
     let listener = RawListener::bind(&listen).await?;
-    eprintln!("judge node for wallet {wallet} on chain {CHAIN_ID}, listening on {listen}");
+    eprintln!(
+        "judge node for {} wallet(s) {wallets:?} on chain {CHAIN_ID}, listening on {listen}",
+        wallets.len()
+    );
     loop {
         let (tcp, peer) = listener.accept().await?;
         let acceptor = acceptor.clone();
         let node = node.clone();
         let data_dir = data_dir.to_path_buf();
         let attestation = attestation.clone();
+        let keygen = keygen.clone();
         tokio::spawn(async move {
             let tls = match acceptor.accept(tcp).await {
                 Ok(tls) => tls,
@@ -323,8 +346,14 @@ async fn serve(
                     eprintln!("failed to save user state: {e}");
                 }
             };
-            if let Err(e) =
-                serve_connection(&node, Connection::new(tls), attestation.as_deref(), save).await
+            if let Err(e) = serve_connection(
+                &node,
+                Connection::new(tls),
+                attestation.as_deref(),
+                Some(&keygen),
+                save,
+            )
+            .await
             {
                 eprintln!("connection with {peer}: {e}");
             }
@@ -357,8 +386,9 @@ async fn main() -> anyhow::Result<()> {
         Command::RegisterPasskey {
             data_dir,
             passkey,
+            wallet,
             seal,
-        } => register_passkey(&data_dir, &passkey, &seal),
+        } => register_passkey(&data_dir, &passkey, wallet, &seal),
         Command::Serve {
             listen,
             tls_dir,

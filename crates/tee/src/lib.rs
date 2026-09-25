@@ -37,6 +37,27 @@ pub trait SealedStorage: Send + Sync {
     fn seal(&self, label: &str, secret: &SecretSlice<u8>) -> Result<(), TeeError>;
     fn unseal(&self, label: &str) -> Result<SecretSlice<u8>, TeeError>;
     fn exists(&self, label: &str) -> bool;
+    /// 保存されている名前の一覧。
+    fn labels(&self) -> Result<Vec<String>, TeeError>;
+}
+
+/// `dir` の中で `suffix` で終わるファイルの名前(`suffix` を除く)を返す。
+#[cfg(any(feature = "insecure-mock", feature = "nitro"))]
+pub(crate) fn labels_in(dir: &std::path::Path, suffix: &str) -> Result<Vec<String>, TeeError> {
+    let entries = std::fs::read_dir(dir).map_err(|e| TeeError::Storage(e.to_string()))?;
+    let mut labels = Vec::new();
+    for entry in entries {
+        let name = entry
+            .map_err(|e| TeeError::Storage(e.to_string()))?
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        if let Some(label) = name.strip_suffix(suffix) {
+            labels.push(label.to_owned());
+        }
+    }
+    labels.sort();
+    Ok(labels)
 }
 
 /// 検証前の attestation document。

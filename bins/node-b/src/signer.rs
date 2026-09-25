@@ -3,7 +3,9 @@
 //! 承認済みの digest についてだけ、A と新しい presignature を作り、A の部分署名を受け取って
 //! B が合成する。B の部分署名と最終署名は B の外に出さない(不変条件 1, 5)。
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use alloy_primitives::{Address, B256, Signature};
@@ -37,14 +39,31 @@ impl<S> PeerSession<S> {
     }
 }
 
+/// B のシェアをウォレットごとに持つ閾値署名器。
 pub struct CggmpSigner<S> {
-    share: KeyShare,
-    address: Address,
+    shares: RwLock<HashMap<Address, Arc<KeyShare>>>,
     _stream: PhantomData<fn() -> S>,
 }
 
+impl<S> Default for CggmpSigner<S> {
+    fn default() -> Self {
+        Self {
+            shares: RwLock::new(HashMap::new()),
+            _stream: PhantomData,
+        }
+    }
+}
+
 impl<S> CggmpSigner<S> {
+    /// シェア 1 つで作る。
     pub fn new(share: KeyShare) -> Result<Self, SignError> {
+        let signer = Self::default();
+        signer.add(share)?;
+        Ok(signer)
+    }
+
+    /// ウォレットのシェアを加え、そのアドレスを返す。
+    pub fn add(&self, share: KeyShare) -> Result<Address, SignError> {
         if share.i != PARTY_B {
             return Err(SignError::Protocol(format!(
                 "key share belongs to party {}, not B",
@@ -52,11 +71,31 @@ impl<S> CggmpSigner<S> {
             )));
         }
         let address = address_of(&share.shared_public_key);
-        Ok(Self {
-            share,
-            address,
-            _stream: PhantomData,
-        })
+        self.shares
+            .write()
+            .expect("shares poisoned")
+            .insert(address, Arc::new(share));
+        Ok(address)
+    }
+
+    pub fn wallets(&self) -> Vec<Address> {
+        let mut wallets: Vec<Address> = self
+            .shares
+            .read()
+            .expect("shares poisoned")
+            .keys()
+            .copied()
+            .collect();
+        wallets.sort();
+        wallets
+    }
+
+    fn share(&self, wallet: Address) -> Option<Arc<KeyShare>> {
+        self.shares
+            .read()
+            .expect("shares poisoned")
+            .get(&wallet)
+            .cloned()
     }
 }
 
@@ -66,8 +105,11 @@ where
 {
     type Peer = PeerSession<S>;
 
-    fn address(&self) -> Address {
-        self.address
+    fn holds(&self, wallet: Address) -> bool {
+        self.shares
+            .read()
+            .expect("shares poisoned")
+            .contains_key(&wallet)
     }
 
     async fn sign(
@@ -75,9 +117,9 @@ where
         approved: ApprovedDigest,
         peer: &mut PeerSession<S>,
     ) -> Result<Signature, SignError> {
-        if approved.key().from != self.address {
-            return Err(SignError::WrongWallet);
-        }
+        let share = self
+            .share(approved.key().from)
+            .ok_or(SignError::WrongWallet)?;
         if peer.cosigner != PARTY_A && peer.cosigner != PARTY_C {
             return Err(SignError::Protocol(format!(
                 "party {} cannot co-sign with B",
@@ -85,21 +127,21 @@ where
             )));
         }
         let signing_hash = approved.key().signing_hash;
-        tokio::time::timeout(SIGNING_TIMEOUT, self.sign_with_a(signing_hash, peer))
+        tokio::time::timeout(SIGNING_TIMEOUT, sign_with_peer(&share, signing_hash, peer))
             .await
             .map_err(|_| SignError::Unavailable("signing session timed out".into()))?
     }
 }
 
-impl<S> CggmpSigner<S>
+async fn sign_with_peer<S>(
+    share: &KeyShare,
+    signing_hash: B256,
+    peer: &mut PeerSession<S>,
+) -> Result<Signature, SignError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    async fn sign_with_a(
-        &self,
-        signing_hash: B256,
-        peer: &mut PeerSession<S>,
-    ) -> Result<Signature, SignError> {
+    {
         let signers = signers_with_b(peer.cosigner);
         let local = signer_index(&signers, PARTY_B).expect("B is always a signer");
         let peer = &mut peer.conn;
@@ -116,7 +158,6 @@ where
 
         // 承認後に毎回新しい presignature を作る。保存はせず、この 1 件で使い切る
         let eid = execution_id(&session, "presign");
-        let share = &self.share;
         let mut presigs = peer
             .run_mpc(
                 signers.len() as u16,
@@ -153,7 +194,7 @@ where
         combine(
             &[partial_a, partial_b],
             &signing_hash,
-            &self.share.shared_public_key,
+            &share.shared_public_key,
         )
         .ok_or(SignError::InvalidSignature)
     }

@@ -8,7 +8,6 @@ use mw_audit::{AuditLog, MemorySink, verify_chain};
 use mw_chain::{BlockInfo, MockChain};
 use mw_core::{AgentOutcome, CoarseReason, Policy, Proposal, UntrustedText};
 use mw_judge::ScriptedLlm;
-use mw_mpc::ThresholdSigner;
 use mw_mpc::insecure_test::InsecureSingleKeySigner;
 use mw_node_b::{
     Components, DEFAULT_ORIGIN, DEFAULT_RP_ID, JudgeNode, ManualClock, NodeConfig,
@@ -102,7 +101,10 @@ fn proposal(wallet: Address) -> Proposal {
 }
 
 async fn pending_request(node: &Node) -> B256 {
-    match node.handle_proposal(proposal(node.wallet()), &mut ()).await {
+    match node
+        .handle_proposal(proposal(node.parts().signer.address()), &mut ())
+        .await
+    {
         AgentOutcome::PendingUserConfirmation { request_id } => request_id,
         other => panic!("expected pending, got {other:?}"),
     }
@@ -115,7 +117,7 @@ fn is_error(r: &UserResponse) -> bool {
 #[tokio::test(flavor = "current_thread")]
 async fn policy_requires_the_registered_passkey() {
     let (node, mut passkey) = setup();
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.address();
 
     assert_eq!(
         signed(&node, &mut passkey, policy(wallet, 1)).await,
@@ -159,7 +161,7 @@ async fn policy_requires_the_registered_passkey() {
 #[tokio::test(flavor = "current_thread")]
 async fn user_approval_then_resume_submits_once() {
     let (node, mut passkey) = setup();
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.address();
     let request_id = pending_request(&node).await;
 
     // 承認前の再開は保留のまま
@@ -198,7 +200,7 @@ async fn user_approval_then_resume_submits_once() {
 #[tokio::test(flavor = "current_thread")]
 async fn user_approval_expires_after_five_minutes() {
     let (node, mut passkey) = setup();
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.address();
     let request_id = pending_request(&node).await;
     signed(
         &node,
@@ -219,7 +221,7 @@ async fn user_approval_expires_after_five_minutes() {
 #[tokio::test(flavor = "current_thread")]
 async fn approval_of_a_stale_request_is_refused() {
     let (node, mut passkey) = setup();
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.address();
     let request_id = pending_request(&node).await;
     // 別の tx が先に通って nonce が進んだ
     node.parts().chain.set_nonce(wallet, 1);
@@ -242,7 +244,7 @@ async fn approval_of_a_stale_request_is_refused() {
 #[tokio::test(flavor = "current_thread")]
 async fn rejected_pending_request_cannot_be_approved() {
     let (node, mut passkey) = setup();
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.address();
     let request_id = pending_request(&node).await;
     assert_eq!(
         node.handle_user_request(UserRequest::RejectPending { wallet, request_id })
@@ -262,7 +264,7 @@ async fn rejected_pending_request_cannot_be_approved() {
 #[tokio::test(flavor = "current_thread")]
 async fn freeze_without_passkey_unfreeze_with_current_epoch() {
     let (node, mut passkey) = setup();
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.address();
 
     assert_eq!(
         node.handle_user_request(UserRequest::Freeze { wallet })
@@ -307,7 +309,7 @@ async fn freeze_without_passkey_unfreeze_with_current_epoch() {
 #[tokio::test(flavor = "current_thread")]
 async fn listing_pending_requires_a_fresh_signature() {
     let (node, mut passkey) = setup();
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.address();
     let request_id = pending_request(&node).await;
     // 拒否される提案も 1 件(別チェーン)
     let mut other_chain = proposal(wallet);
@@ -361,7 +363,7 @@ async fn listing_pending_requires_a_fresh_signature() {
 #[tokio::test(flavor = "current_thread")]
 async fn state_survives_snapshot_and_restore() {
     let (node, mut passkey) = setup();
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.address();
     signed(&node, &mut passkey, policy(wallet, 4)).await;
     node.freeze(wallet);
     let snapshot = node.snapshot();
@@ -410,7 +412,7 @@ fn setup_without_passkey() -> Node {
 #[tokio::test(flavor = "current_thread")]
 async fn passkey_rotation_requires_the_current_passkey() {
     let (node, mut old) = setup();
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.address();
     let mut new = SoftwarePasskey::generate(DEFAULT_RP_ID, DEFAULT_ORIGIN);
 
     // 新しいパスキーが自分で自分を登録することはできない

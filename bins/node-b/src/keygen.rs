@@ -1,12 +1,14 @@
 //! B 側の鍵生成(2-of-3 DKG と aux info 生成)。
 //!
-//! B のシェアがまだないときにだけ、A からの接続 1 本で行う。
-//! A 側のプロセスは A と C のパーティを動かす。
+//! 1 本の接続で新しいウォレットを 1 つ作る。A 側のプロセスは A と C のパーティを動かす。
+//! B は 1 つで複数のウォレットのシェアを持てる。
 
+use alloy_primitives::B256;
 use mw_mpc::protocol::{
     KeyShare, PARTIES, PARTY_B, PregeneratedPrimes, ProtocolError, address_of, aux_party,
     complete_share, execution_id, keygen_party,
 };
+use mw_policy::RegisteredPasskey;
 use mw_wire::{AtoB, BtoA, WireError};
 use rand_core::OsRng;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -29,17 +31,24 @@ pub enum KeygenError {
     },
 }
 
+/// 鍵生成の結果。`passkey` は A が新しいウォレットの最初のパスキーとして送ってきたもの。
+pub struct KeygenOutput {
+    pub share: KeyShare,
+    pub passkey: Option<RegisteredPasskey>,
+}
+
+/// 最初の要求を待ってから鍵生成を行う(`keygen` サブコマンド用)。
 pub async fn run_keygen<S>(
     conn: &mut AConnection<S>,
     attestation: Option<&AttestationService>,
-) -> Result<KeyShare, KeygenError>
+) -> Result<KeygenOutput, KeygenError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     // A は鍵生成の前に attestation を確かめる(偽の B とシェアを作らないため)
     let session = loop {
         match conn.recv().await? {
-            AtoB::Keygen { session } => break session,
+            AtoB::Keygen { session, passkey } => break (session, passkey),
             AtoB::Attest { nonce } => {
                 let reply = match attestation {
                     Some(service) => service.respond(&nonce),
@@ -52,7 +61,21 @@ where
             other => return Err(KeygenError::Unexpected(format!("{other:?}"))),
         }
     };
+    let (session, passkey) = session;
+    let share = keygen_after_request(conn, session).await?;
+    Ok(KeygenOutput { share, passkey })
+}
 
+/// `Keygen` を受け取った後の鍵生成。最後に A とアドレスを突き合わせる。
+///
+/// シェアの封印と `KeygenStored` の送信は呼び出し側で行う。
+pub async fn keygen_after_request<S>(
+    conn: &mut AConnection<S>,
+    session: B256,
+) -> Result<KeyShare, KeygenError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
     // 素数の生成は重いので、プロトコルを始める前に済ませておく
     let primes = tokio::task::spawn_blocking(|| PregeneratedPrimes::generate(&mut OsRng))
         .await

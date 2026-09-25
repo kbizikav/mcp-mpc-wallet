@@ -85,7 +85,7 @@ where
         wallet: Address,
         passkey: RegisteredPasskey,
     ) -> Result<(), UserError> {
-        if wallet != self.wallet() {
+        if !self.holds(wallet) {
             return Err(UserError::UnknownWallet);
         }
         let mut passkeys = self.passkeys.lock().expect("passkeys poisoned");
@@ -146,7 +146,7 @@ where
     }
 
     fn checked_wallet(&self, wallet: Address) -> Result<Address, UserError> {
-        if wallet == self.wallet() {
+        if self.holds(wallet) {
             Ok(wallet)
         } else {
             Err(UserError::UnknownWallet)
@@ -229,7 +229,7 @@ where
                 }
                 Ok(UserResponse::PendingRequests {
                     requests: self.pending_views(now),
-                    recent: self.activity_views(),
+                    recent: self.activity_views(wallet),
                     policy_text: self.policies.get(wallet).map(|p| p.text),
                 })
             }
@@ -265,7 +265,7 @@ where
         else {
             return reject(CoarseReason::InvalidRequest);
         };
-        if wallet != self.wallet() {
+        if !self.holds(wallet) {
             return reject(CoarseReason::InvalidRequest);
         }
         if let Err(e) = self.verify_passkey(&signed) {
@@ -324,14 +324,16 @@ where
         self.report_submission(wallet, signing_hash, result)
     }
 
-    /// 直近の出来事(新しい順)。
-    fn activity_views(&self) -> Vec<ActivityView> {
+    /// このウォレットの直近の出来事(新しい順)。
+    fn activity_views(&self, wallet: Address) -> Vec<ActivityView> {
         self.activity
             .lock()
             .expect("activity poisoned")
             .iter()
             .rev()
-            .map(|(at, notice)| ActivityView {
+            .filter(|(_, w, _)| *w == wallet)
+            .take(crate::pipeline::ACTIVITY_PER_WALLET)
+            .map(|(at, _, notice)| ActivityView {
                 at: *at,
                 notice: serde_json::to_value(notice).unwrap_or_default(),
             })
@@ -420,7 +422,7 @@ where
         peer: &mut T::Peer,
     ) -> AgentOutcome {
         let _serial = self.serial.lock().await;
-        if wallet != self.wallet() {
+        if !self.holds(wallet) {
             return AgentOutcome::Rejected {
                 reason: CoarseReason::InvalidRequest,
             };

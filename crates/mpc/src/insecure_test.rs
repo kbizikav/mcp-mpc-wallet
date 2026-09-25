@@ -27,11 +27,17 @@ impl InsecureSingleKeySigner {
     }
 }
 
+impl InsecureSingleKeySigner {
+    pub fn address(&self) -> Address {
+        self.address
+    }
+}
+
 impl ThresholdSigner for InsecureSingleKeySigner {
     type Peer = ();
 
-    fn address(&self) -> Address {
-        self.address
+    fn holds(&self, wallet: Address) -> bool {
+        wallet == self.address
     }
 
     async fn sign(&self, approved: ApprovedDigest, _peer: &mut ()) -> Result<Signature, SignError> {

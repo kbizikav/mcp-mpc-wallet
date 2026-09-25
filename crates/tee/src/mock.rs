@@ -45,6 +45,18 @@ impl SealedStorage for InsecureMemoryStorage {
             .lock()
             .is_ok_and(|secrets| secrets.contains_key(label))
     }
+
+    fn labels(&self) -> Result<Vec<String>, TeeError> {
+        let mut labels: Vec<String> = self
+            .secrets
+            .lock()
+            .map_err(|_| TeeError::Storage("poisoned".into()))?
+            .keys()
+            .cloned()
+            .collect();
+        labels.sort();
+        Ok(labels)
+    }
 }
 
 /// ファイルに平文で置く SealedStorage(TEE なしで B を動かす開発用)。
@@ -87,6 +99,10 @@ impl SealedStorage for InsecureFileStorage {
 
     fn exists(&self, label: &str) -> bool {
         self.path(label).is_ok_and(|p| p.exists())
+    }
+
+    fn labels(&self) -> Result<Vec<String>, TeeError> {
+        crate::labels_in(&self.dir, ".sealed")
     }
 
     fn unseal(&self, label: &str) -> Result<SecretSlice<u8>, TeeError> {
@@ -240,6 +256,10 @@ mod tests {
                 .seal("../escape", &SecretSlice::from(vec![1]))
                 .is_err()
         );
+        storage
+            .seal("share-b-abc", &SecretSlice::from(vec![7]))
+            .unwrap();
+        assert_eq!(storage.labels().unwrap(), ["share-b", "share-b-abc"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

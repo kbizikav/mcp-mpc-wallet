@@ -197,6 +197,10 @@ impl SealedStorage for KmsToolSealedStorage {
     fn exists(&self, label: &str) -> bool {
         self.path(label).is_ok_and(|p| p.exists())
     }
+
+    fn labels(&self) -> Result<Vec<String>, TeeError> {
+        crate::labels_in(&self.dir, ".kms.json")
+    }
 }
 
 #[cfg(test)]
@@ -247,6 +251,7 @@ mod tests {
         s.seal("share-b", &SecretSlice::from(b"key share".to_vec()))
             .unwrap();
         assert!(s.exists("share-b"));
+        assert_eq!(s.labels().unwrap(), ["share-b"]);
         let raw = std::fs::read_to_string(dir.join("share-b.kms.json")).unwrap();
         assert!(
             !raw.contains(&STANDARD.encode([7u8; 32])),

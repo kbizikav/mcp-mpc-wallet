@@ -7,7 +7,6 @@ use mw_audit::{AuditLog, MemorySink};
 use mw_chain::{BlockInfo, MockChain, decode_typed_data};
 use mw_core::{AgentOutcome, CoarseReason, Policy, TypedDataProposal, UntrustedText};
 use mw_judge::ScriptedLlm;
-use mw_mpc::ThresholdSigner;
 use mw_mpc::insecure_test::InsecureSingleKeySigner;
 use mw_node_b::{
     Components, DEFAULT_ORIGIN, DEFAULT_RP_ID, JudgeNode, ManualClock, NodeConfig,
@@ -59,7 +58,7 @@ fn build(verdict: Option<&str>, with_policy: bool) -> Node {
     );
     if with_policy {
         node.install_unverified_policy(Policy {
-            wallet: node.wallet(),
+            wallet: node.parts().signer.address(),
             version: 1,
             text: "Permits of up to 5 USDC to 0xb0b0... are fine.".into(),
         })
@@ -197,7 +196,7 @@ async fn unlimited_permit_is_flagged_to_the_judge() {
 #[tokio::test(flavor = "current_thread")]
 async fn permit_without_chain_id_needs_the_owner_then_resumes_to_a_signature() {
     let node = build(None, true);
-    let wallet = node.wallet();
+    let wallet = node.parts().signer.address();
     let mut passkey = SoftwarePasskey::generate(DEFAULT_RP_ID, DEFAULT_ORIGIN);
     node.register_passkey(wallet, passkey.registration())
         .unwrap();

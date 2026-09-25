@@ -9,7 +9,7 @@ use mw_mpc::protocol::{
     complete_share, execution_id, issue_partial, keygen_party, presign_party, signer_index,
     signers_with_b,
 };
-use mw_policy::{SignedUserOperation, UserRequest, UserResponse};
+use mw_policy::{RegisteredPasskey, SignedUserOperation, UserRequest, UserResponse};
 use mw_tee::verify::{ExpectedPcrs, verify_nitro_attestation};
 use mw_wire::{AtoB, BtoA, Connection, WireError};
 use rand_core::{OsRng, RngCore};
@@ -131,6 +131,17 @@ where
     }
 }
 
+/// 鍵生成の進み具合(画面に出すため)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeygenStep {
+    GeneratingPrimes,
+    DistributedKeygen,
+    AuxInfo,
+    Sealing,
+    Done,
+}
+
 pub struct KeygenOutput {
     pub share_a: KeyShare,
     pub share_c: KeyShare,
@@ -138,10 +149,18 @@ pub struct KeygenOutput {
 }
 
 /// B と 2-of-3 の鍵生成を行う。このプロセスは A と C のパーティを動かす。
-pub async fn keygen<S>(conn: &mut BConnection<S>) -> Result<KeygenOutput, SessionError>
+///
+/// `passkey` は新しいウォレットの最初のパスキー。B は鍵生成と同じ(attestation を検証した)
+/// 接続の上でこれを登録する。`progress` には進み具合が通知される。
+pub async fn keygen<S>(
+    conn: &mut BConnection<S>,
+    passkey: Option<RegisteredPasskey>,
+    progress: &(dyn Fn(KeygenStep) + Send + Sync),
+) -> Result<KeygenOutput, SessionError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    progress(KeygenStep::GeneratingPrimes);
     // 素数の生成は重いので、プロトコルを始める前に済ませておく
     let (primes_a, primes_c) = tokio::join!(
         tokio::task::spawn_blocking(|| PregeneratedPrimes::generate(&mut OsRng)),
@@ -156,6 +175,7 @@ where
     OsRng.fill_bytes(&mut session);
     conn.send(&AtoB::Keygen {
         session: B256::from(session),
+        passkey,
     })
     .await?;
     match conn.recv().await? {
@@ -165,6 +185,7 @@ where
     }
 
     let local = [PARTY_A, PARTY_C];
+    progress(KeygenStep::DistributedKeygen);
     let kg = execution_id(&session, "keygen");
     let incomplete = conn
         .run_mpc(
@@ -179,6 +200,7 @@ where
         )
         .await?;
 
+    progress(KeygenStep::AuxInfo);
     let aux_eid = execution_id(&session, "aux");
     let aux = conn
         .run_mpc(
@@ -212,6 +234,16 @@ where
         other => return Err(SessionError::Unexpected(format!("{other:?}"))),
     }
     conn.send(&AtoB::KeygenResult { address }).await?;
+
+    // B がシェアを封印し終えるのを待つ(失敗したら、このウォレットは使えない)
+    progress(KeygenStep::Sealing);
+    match conn.recv().await? {
+        BtoA::KeygenStored { address: b } if b == address => {}
+        BtoA::KeygenStored { .. } => return Err(SessionError::AddressMismatch),
+        BtoA::Error { message } => return Err(SessionError::Remote(message)),
+        other => return Err(SessionError::Unexpected(format!("{other:?}"))),
+    }
+    progress(KeygenStep::Done);
     Ok(KeygenOutput {
         share_a,
         share_c,
