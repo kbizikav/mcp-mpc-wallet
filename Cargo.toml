@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/mpc"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Paillier/ZK の計算はデバッグビルドだと遅すぎるので、依存 crate だけ最適化する
+[profile.dev.package."*"]
+opt-level = 3

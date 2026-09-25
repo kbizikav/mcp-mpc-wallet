@@ -1,0 +1,6 @@
+/target
+*.env
+.env*
+secrets/
+*.share
+*.key
