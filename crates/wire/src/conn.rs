@@ -38,6 +38,8 @@ pub struct Connection<S, Out, In> {
     stream: SplitStream<Framed<S, LengthDelimitedCodec>>,
     /// MPC の途中で先に届いた、MPC 以外のメッセージ
     pending: VecDeque<In>,
+    /// 前の段階の MPC の途中で先に届いた、次の段階の MPC メッセージ
+    early: VecDeque<WireMsg>,
     _out: PhantomData<fn(Out)>,
 }
 
@@ -56,6 +58,7 @@ where
             sink,
             stream,
             pending: VecDeque::new(),
+            early: VecDeque::new(),
             _out: PhantomData,
         }
     }
@@ -79,10 +82,17 @@ where
 
     /// この接続の上でローカルのパーティを動かす。
     ///
+    /// `phase` はこの段階の名前(keygen、aux など)で、両側で同じものを使う。
     /// `wrap` は送るメッセージの包み方、`unwrap` は受け取ったメッセージから MPC 部分を
     /// 取り出す関数。MPC 以外のメッセージが届いたら、以降の `recv` で返すために取っておく。
+    ///
+    /// 相手はこの段階を終えると、すぐ次の段階のメッセージを送ってくる。それを今の段階に
+    /// 渡すと失われるので、次の `run_mpc` のために取っておき、ここでの受信は終える
+    /// (相手のこの段階のメッセージは、接続の順序からすべて届いている)。
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_mpc<M, F, Fut, T>(
         &mut self,
+        phase: &str,
         n: u16,
         local: &[u16],
         wrap: fn(WireMsg) -> Out,
@@ -104,10 +114,22 @@ where
             result
         };
 
+        // 前の段階のときに先に届いていた、この段階のメッセージ
+        let mut later = VecDeque::new();
+        while let Some(wire) = self.early.pop_front() {
+            if wire.phase == phase {
+                let _ = from_peer.unbounded_send(wire);
+            } else {
+                later.push_back(wire);
+            }
+        }
+        self.early = later;
+
         let sink = &mut self.sink;
         let writer = async move {
             // run_parties が終わると net_out が閉じ、残りを送り切ってから抜ける
-            while let Some(msg) = to_peer.next().await {
+            while let Some(mut msg) = to_peer.next().await {
+                msg.phase = phase.to_owned();
                 send_on(sink, &wrap(msg)).await?;
             }
             Ok::<_, WireError>(())
@@ -115,12 +137,18 @@ where
 
         let stream = &mut self.stream;
         let pending = &mut self.pending;
+        let early = &mut self.early;
         let reader = async move {
             loop {
                 futures::select! {
                     _ = done_rx => return Ok(()),
                     frame = recv_on::<In, _>(stream).fuse() => match frame {
                         Ok(msg) => match unwrap(msg) {
+                            Ok(wire) if wire.phase != phase => {
+                                // 相手は次の段階に進んだ。この段階の残りはローカルで終えられる
+                                early.push_back(wire);
+                                return Ok(());
+                            }
                             Ok(wire) => {
                                 if from_peer.unbounded_send(wire).is_err() {
                                     return Ok(());

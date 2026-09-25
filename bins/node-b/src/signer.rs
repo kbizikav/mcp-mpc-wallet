@@ -160,6 +160,7 @@ where
         let eid = execution_id(&session, "presign");
         let mut presigs = peer
             .run_mpc(
+                "presign",
                 signers.len() as u16,
                 &[local],
                 |msg| BtoA::Mpc { msg },

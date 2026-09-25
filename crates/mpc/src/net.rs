@@ -28,6 +28,10 @@ pub struct WireMsg {
     pub from: u16,
     pub to: Option<u16>,
     pub body: serde_json::Value,
+    /// どの段階(keygen、aux など)のメッセージか。送る側の接続が付ける。
+    /// 相手が先に次の段階へ進んだとき、そのメッセージを今の段階に混ぜないために使う
+    #[serde(default)]
+    pub phase: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -77,7 +81,12 @@ impl<M: Clone + Serialize> Router<M> {
     fn send_remote(&self, from: u16, to: Option<u16>, msg: &M) -> Result<(), NetError> {
         let body = serde_json::to_value(msg).map_err(|e| NetError::Malformed(e.to_string()))?;
         self.net_out
-            .unbounded_send(WireMsg { from, to, body })
+            .unbounded_send(WireMsg {
+                from,
+                to,
+                body,
+                phase: String::new(),
+            })
             .map_err(|_| NetError::Closed)
     }
 
@@ -109,7 +118,7 @@ impl<M: Clone + Serialize> Router<M> {
 
 impl<M: Clone + Serialize + DeserializeOwned> Router<M> {
     fn route_remote(&mut self, wire: WireMsg) -> Result<(), NetError> {
-        let WireMsg { from, to, body } = wire;
+        let WireMsg { from, to, body, .. } = wire;
         // 相手側のパーティを名乗るメッセージだけを受け付ける
         let valid = from < self.n && !self.is_local(from) && to.is_none_or(|t| self.is_local(t));
         if !valid {
@@ -252,6 +261,7 @@ mod tests {
             from,
             to,
             body: serde_json::json!(7),
+            phase: String::new(),
         }
     }
 
@@ -292,6 +302,7 @@ mod tests {
             from,
             to,
             body: serde_json::json!(v),
+            phase: String::new(),
         }
     }
 }

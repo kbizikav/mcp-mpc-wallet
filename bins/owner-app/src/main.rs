@@ -352,7 +352,9 @@ fn shell_quote(arg: &str) -> String {
 }
 
 fn absolute(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    std::fs::canonicalize(path)
+        .or_else(|_| std::path::absolute(path))
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Claude Code に MCP サーバを登録するコマンド。API キーはシェルの変数のまま残す。

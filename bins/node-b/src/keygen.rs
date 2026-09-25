@@ -85,6 +85,7 @@ where
     let kg = execution_id(&session.0, "keygen");
     let incomplete = conn
         .run_mpc(
+            "keygen",
             PARTIES,
             &[PARTY_B],
             |msg| BtoA::Mpc { msg },
@@ -102,6 +103,7 @@ where
     let mut primes = Some(primes);
     let aux = conn
         .run_mpc(
+            "aux",
             PARTIES,
             &[PARTY_B],
             |msg| BtoA::Mpc { msg },

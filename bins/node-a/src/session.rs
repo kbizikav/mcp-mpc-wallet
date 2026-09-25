@@ -189,6 +189,7 @@ where
     let kg = execution_id(&session, "keygen");
     let incomplete = conn
         .run_mpc(
+            "keygen",
             PARTIES,
             &local,
             |msg| AtoB::Mpc { msg },
@@ -204,6 +205,7 @@ where
     let aux_eid = execution_id(&session, "aux");
     let aux = conn
         .run_mpc(
+            "aux",
             PARTIES,
             &local,
             |msg| AtoB::Mpc { msg },
@@ -371,6 +373,7 @@ where
                 let eid = execution_id(&session.0, "presign");
                 let presig = conn
                     .run_mpc(
+                        "presign",
                         signers.len() as u16,
                         &[local],
                         |msg| AtoB::Mpc { msg },
