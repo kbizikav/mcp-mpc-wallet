@@ -59,8 +59,24 @@ mw-node-a mcp --node-b 127.0.0.1:7443 --tls-dir .local/node-a/tls --data-dir .lo
 B には `ALCHEMY_API_KEY`、`TENDERLY_API_KEY`、`TENDERLY_ACCOUNT_SLUG`、`TENDERLY_PROJECT_SLUG`、
 `OPENAI_API_KEY`(と任意で `OPENAI_MODEL`)が、A には `ALCHEMY_API_KEY` が必要。
 
-オーナーの操作はブラウザの `mw-owner` でもできる(パスキーは Touch ID。初回だけ `--legacy-passkey` で
-開発用パスキーから差し替える。B には `--passkey-rp localhost=http://localhost:8787` を渡しておく)。
+### オーナー用アプリ(`mw-owner`)
+
+```sh
+mw-owner --node-b <host:port> --tls-dir .local/node-a/tls --data-dir .local/node-a/data \
+  [--expected-pcr0 <PCR0>] [--legacy-passkey .local/user/passkey.json]
+```
+
+http://localhost:8787 を開く(パスキーの RP ID が `localhost` なので)。B には
+`--passkey-rp localhost=http://localhost:8787` を渡しておく。
+
+- `--data-dir` に `wallet.json` がなければ初期設定の画面になる。判定ノードの attestation の確認、
+  パスキーの作成(Touch ID)、復旧用パスフレーズ、B との鍵生成、Claude Code への登録コマンド、
+  最初の方針の登録までを画面で行う。B は `serve` のまま新しいウォレットの鍵生成を受け付け、
+  要求に含まれるパスキーを、attestation を検証した同じ接続の上で登録する(1 つの B が複数の
+  ウォレットを持てる)。
+- 既存のウォレットは、承認、履歴、方針、凍結と解除を画面で行う。`--legacy-passkey` を渡すと、
+  開発用のソフトウェアパスキーからブラウザのパスキーへ差し替えられる。
+- CLI でも同じことができる。
 要確認になった tx は `mw-user pending` で詳細を見て `mw-user approve --request-id <id>` で承認し、
 5 分以内にエージェントが `resume_transaction` を呼ぶと送信される。
 `mw-user freeze` は署名なしで凍結でき、解除(`unfreeze`)にはパスキーが要る。

@@ -97,6 +97,11 @@ impl ScriptedSimulator {
     pub fn requests(&self) -> Vec<SimulationRequest> {
         self.requests.lock().expect("poisoned").clone()
     }
+
+    /// 次の呼び出しで返す応答を差し込む。
+    pub fn respond_next(&self, response: Result<SimulationReport, String>) {
+        self.responses.lock().expect("poisoned").push(response);
+    }
 }
 
 impl Simulator for ScriptedSimulator {

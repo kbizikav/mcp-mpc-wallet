@@ -11,13 +11,20 @@ The agent never gets a tool that could change your policy.
 
 - Rust (stable) and this repository.
 - An Alchemy API key for Base Sepolia, set as `ALCHEMY_API_KEY`. A uses it to fill in the nonce, gas and fees.
-- The output of keygen:
-  - `tls/`: `node-a.pem` and `node-a.key` (your client certificate), plus `ca.pem`.
-  - `data/`: `share-a.json` (your key share) and `share-c.age` (the encrypted recovery share).
+- Your client certificate in `tls/` (`node-a.pem`, `node-a.key`, and `ca.pem`).
+- The output of keygen (the owner app's setup or `mw-node-a keygen`) in `data/`: `share-a.json`
+  (your key share), `share-c.age` (the encrypted recovery share) and `wallet.json` (the address).
 - The judge node's address (`host:7443`) and its enclave image measurement **PCR0**. A refuses to talk
   to a judge node whose attestation does not match this PCR0.
 
-## Install into Claude Code
+## The easy way: the owner app
+
+When you create the wallet in the owner app (`mw-owner`, see [demo.md](demo.md)), step 5 of the
+setup shows the exact `claude mcp add` command for your machine — absolute paths, the judge node's
+address and its PCR0 already filled in. Your Alchemy key stays a shell variable (`$ALCHEMY_API_KEY`)
+and is not written into the command. Copy it, run it, and restart Claude Code.
+
+## Install into Claude Code with the script
 
 ```sh
 export ALCHEMY_API_KEY=...

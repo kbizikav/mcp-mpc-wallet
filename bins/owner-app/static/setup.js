@@ -56,11 +56,14 @@ export async function startSetup(setupState, onFinish) {
   wizard.wallet = setupState.wallet;
   document.body.dataset.mode = "setup";
   let resume = 0;
-  try {
-    resume = Number(sessionStorage.getItem(RESUME_KEY) || 0);
-  } catch {}
   if (setupState.job && setupState.job.running) resume = 3;
-  else if (setupState.wallet) resume = Math.max(resume, 4);
+  else if (setupState.wallet) {
+    try {
+      resume = Math.max(4, Number(sessionStorage.getItem(RESUME_KEY) || 4));
+    } catch {
+      resume = 4;
+    }
+  }
   go(resume);
 }
 

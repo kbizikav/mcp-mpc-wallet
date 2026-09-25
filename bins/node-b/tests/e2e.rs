@@ -139,22 +139,7 @@ fn node_with(share_b: KeyShare, verdicts: &str, with_policy: bool) -> Node {
         NodeConfig::new(CHAIN_ID),
         Components {
             chain,
-            simulator: ScriptedSimulator::new([Ok(SimulationReport {
-                success: true,
-                gas_used: 21_000,
-                block_number: BLOCK.number,
-                transfers: vec![AssetTransfer {
-                    token: None,
-                    from: wallet,
-                    to: BOB,
-                    amount: U256::from(AMOUNT),
-                    symbol: None,
-                    decimals: None,
-                }],
-                allowance_changes: vec![],
-                unrecognized_changes: vec![],
-                raw_response_hash: B256::ZERO,
-            })]),
+            simulator: ScriptedSimulator::new([Ok(transfer_report(wallet))]),
             llm: ScriptedLlm::new(vec![Ok(judgement); 3]),
             signer,
             notifier: RecordingNotifier::default(),
@@ -172,6 +157,26 @@ fn node_with(share_b: KeyShare, verdicts: &str, with_policy: bool) -> Node {
     })
     .unwrap();
     node
+}
+
+/// `wallet` から BOB へ AMOUNT を送るシミュレーション結果。
+fn transfer_report(wallet: Address) -> SimulationReport {
+    SimulationReport {
+        success: true,
+        gas_used: 21_000,
+        block_number: BLOCK.number,
+        transfers: vec![AssetTransfer {
+            token: None,
+            from: wallet,
+            to: BOB,
+            amount: U256::from(AMOUNT),
+            symbol: None,
+            decimals: None,
+        }],
+        allowance_changes: vec![],
+        unrecognized_changes: vec![],
+        raw_response_hash: B256::ZERO,
+    }
 }
 
 fn proposal(wallet: Address) -> Proposal {
@@ -538,5 +543,32 @@ async fn second_wallet_while_serving(share_b: KeyShare) {
     assert!(
         matches!(view, UserResponse::PendingRequests { .. }),
         "{view:?}"
+    );
+
+    // 新しいウォレットの方針をパスキーで登録し、そのシェアで署名・送信できる
+    let set = node
+        .handle_user_request(UserRequest::Signed {
+            signed: passkey.sign(UserOperation::SetPolicy {
+                policy: Policy {
+                    wallet: second,
+                    version: 1,
+                    text: "small transfers are fine".into(),
+                },
+            }),
+        })
+        .await;
+    assert!(matches!(set, UserResponse::PolicySet { .. }), "{set:?}");
+    node.parts().chain.set_nonce(second, 0);
+    node.parts()
+        .simulator
+        .respond_next(Ok(transfer_report(second)));
+    let (outcome, _) = run_proposal(&node, &out.share_a, proposal(second)).await;
+    let sent = node.parts().chain.sent();
+    assert_eq!(sent.len(), 1);
+    let envelope = TxEnvelope::decode_2718(&mut sent[0].as_ref()).unwrap();
+    assert_eq!(envelope.recover_signer().unwrap(), second);
+    assert!(
+        matches!(outcome, AgentOutcome::Submitted { .. }),
+        "{outcome:?}"
     );
 }
