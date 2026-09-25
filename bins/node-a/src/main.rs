@@ -1,7 +1,7 @@
 //! 署名ノード A。
 //!
 //! ```text
-//! mw-node-a keygen  --node-b <addr> --tls-dir <dir> --data-dir <dir>   # MW_RECOVERY_PASSPHRASE が必要
+//! mw-node-a keygen  --node-b <addr> --tls-dir <dir> --data-dir <dir> [--passphrase-file <path>]
 //! mw-node-a info    --data-dir <dir>
 //! mw-node-a propose --node-b <addr> --tls-dir <dir> --data-dir <dir> --to <addr> [--value-wei N] [--data 0x..] --note <text>
 //! mw-node-a mcp     --node-b <addr> --tls-dir <dir> --data-dir <dir>   # stdio の MCP サーバ
@@ -48,9 +48,14 @@ struct Conn {
 #[derive(Subcommand)]
 enum Command {
     /// B と 2-of-3 の鍵生成を行い、シェア A と暗号化したシェア C を保存する
+    ///
+    /// シェア C を暗号化するパスフレーズは `--passphrase-file` の 1 行目か、
+    /// 環境変数 MW_RECOVERY_PASSPHRASE から読む。
     Keygen {
         #[command(flatten)]
         conn: Conn,
+        #[arg(long)]
+        passphrase_file: Option<PathBuf>,
     },
     /// ウォレットのアドレスを表示する
     Info {
@@ -107,10 +112,26 @@ async fn wallet_config(conn: &Conn) -> anyhow::Result<WalletConfig> {
     })
 }
 
-async fn run_keygen(conn: &Conn) -> anyhow::Result<()> {
-    let passphrase = std::env::var("MW_RECOVERY_PASSPHRASE")
-        .map(SecretString::from)
-        .context("MW_RECOVERY_PASSPHRASE is not set (used to encrypt the recovery share C)")?;
+fn recovery_passphrase(file: Option<&Path>) -> anyhow::Result<SecretString> {
+    let passphrase = match file {
+        Some(path) => std::fs::read_to_string(path)
+            .with_context(|| format!("reading {}", path.display()))?
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned(),
+        None => std::env::var("MW_RECOVERY_PASSPHRASE").context(
+            "set MW_RECOVERY_PASSPHRASE or pass --passphrase-file (encrypts the recovery share C)",
+        )?,
+    };
+    if passphrase.chars().count() < 12 {
+        bail!("the recovery passphrase must be at least 12 characters");
+    }
+    Ok(SecretString::from(passphrase))
+}
+
+async fn run_keygen(conn: &Conn, passphrase_file: Option<&Path>) -> anyhow::Result<()> {
+    let passphrase = recovery_passphrase(passphrase_file)?;
     std::fs::create_dir_all(&conn.data_dir)?;
     if conn.data_dir.join(mw_node_a::shares::SHARE_A_FILE).exists() {
         bail!("share A already exists in {}", conn.data_dir.display());
@@ -173,7 +194,10 @@ async fn run_propose(conn: &Conn, params: ProposeParams, wait: bool) -> anyhow::
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
-        Command::Keygen { conn } => run_keygen(&conn).await,
+        Command::Keygen {
+            conn,
+            passphrase_file,
+        } => run_keygen(&conn, passphrase_file.as_deref()).await,
         Command::Info { data_dir } => {
             let share = load_share_a(&data_dir)?;
             println!("{}", address_of(&share.shared_public_key));
