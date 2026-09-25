@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "bins/*"]
 
 [workspace.package]
 edition = "2024"
@@ -18,16 +18,24 @@ mw-judge = { path = "crates/judge" }
 mw-chain = { path = "crates/chain" }
 mw-http = { path = "crates/http" }
 mw-node-b = { path = "crates/node-b" }
+mw-wire = { path = "crates/wire" }
+mw-node-a = { path = "bins/node-a" }
 
 alloy-consensus = { version = "2.5", default-features = false, features = ["std", "serde"] }
 alloy-eips = { version = "2.5", default-features = false, features = ["std", "serde"] }
 alloy-primitives = { version = "1.7", features = ["serde"] }
 alloy-rlp = "0.3"
 alloy-sol-types = "1.7"
+age = "0.12"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
 cggmp21 = { version = "0.6.3", features = ["curve-secp256k1"] }
+futures = "0.3"
 k256 = { version = "0.13", features = ["ecdsa"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+rmcp = { version = "3.4", features = ["server", "macros", "transport-io"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+rcgen = "0.14"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2"] }
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
@@ -36,6 +44,8 @@ sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "rt", "sync"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
+tokio-util = { version = "0.7", features = ["codec"] }
 webpki-roots = "1"
 
 [workspace.lints.rust]

@@ -41,6 +41,60 @@ impl SealedStorage for InsecureMemoryStorage {
     }
 }
 
+/// ファイルに平文で置く SealedStorage(TEE なしで B を動かす開発用)。
+///
+/// ファイルは所有者だけが読める権限で作る。秘密は守られないので本番で使ってはいけない。
+pub struct InsecureFileStorage {
+    dir: std::path::PathBuf,
+}
+
+impl InsecureFileStorage {
+    pub fn new(dir: impl Into<std::path::PathBuf>) -> Result<Self, TeeError> {
+        let dir = dir.into();
+        std::fs::create_dir_all(&dir).map_err(|e| TeeError::Storage(e.to_string()))?;
+        Ok(Self { dir })
+    }
+
+    fn path(&self, label: &str) -> Result<std::path::PathBuf, TeeError> {
+        if label.is_empty() || !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err(TeeError::Storage(format!("invalid label {label:?}")));
+        }
+        Ok(self.dir.join(format!("{label}.sealed")))
+    }
+
+    pub fn exists(&self, label: &str) -> bool {
+        self.path(label).is_ok_and(|p| p.exists())
+    }
+}
+
+impl SealedStorage for InsecureFileStorage {
+    fn seal(&self, label: &str, secret: &SecretSlice<u8>) -> Result<(), TeeError> {
+        use std::io::Write;
+        let path = self.path(label)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options
+            .open(&path)
+            .map_err(|e| TeeError::Storage(format!("{}: {e}", path.display())))?;
+        file.write_all(secret.expose_secret())
+            .and_then(|()| file.sync_all())
+            .map_err(|e| TeeError::Storage(e.to_string()))
+    }
+
+    fn unseal(&self, label: &str) -> Result<SecretSlice<u8>, TeeError> {
+        let path = self.path(label)?;
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(SecretSlice::from(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(TeeError::NotFound(label.to_owned()))
+            }
+            Err(e) => Err(TeeError::Storage(e.to_string())),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct MockDocument {
     pcrs: Vec<Vec<u8>>,
@@ -160,6 +214,27 @@ mod tests {
             storage.unseal("missing"),
             Err(TeeError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn file_storage_never_overwrites() {
+        let dir = std::env::temp_dir().join(format!("mw-tee-test-{}", std::process::id()));
+        let storage = InsecureFileStorage::new(&dir).unwrap();
+        storage
+            .seal("share-b", &SecretSlice::from(vec![9]))
+            .unwrap();
+        assert!(
+            storage
+                .seal("share-b", &SecretSlice::from(vec![8]))
+                .is_err()
+        );
+        assert_eq!(storage.unseal("share-b").unwrap().expose_secret(), &[9]);
+        assert!(
+            storage
+                .seal("../escape", &SecretSlice::from(vec![1]))
+                .is_err()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

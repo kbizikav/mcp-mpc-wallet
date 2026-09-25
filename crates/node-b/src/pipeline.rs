@@ -140,12 +140,15 @@ where
         self.parts.signer.address()
     }
 
-    /// テスト専用: パスキー検証を通さずに方針を登録する。
-    #[cfg(feature = "test-util")]
-    pub fn install_policy_for_tests(&self, policy: Policy) {
-        self.policies
-            .install_verified(policy)
-            .expect("newer policy version");
+    /// パスキー検証を通さずに方針を登録する(不変条件 6 を満たさない)。
+    ///
+    /// テストと、パスキー登録(M5)ができるまでの開発用。本番ビルドで有効にしてはいけない。
+    #[cfg(feature = "unverified-policy")]
+    pub fn install_unverified_policy(
+        &self,
+        policy: Policy,
+    ) -> Result<(), crate::policy_store::PolicyStoreError> {
+        self.policies.install_verified(policy)
     }
 
     /// ユーザー操作による凍結。
@@ -166,7 +169,9 @@ where
     }
 
     /// エージェントからの提案を処理する。エージェントには粗い結果だけを返す。
-    pub async fn handle_proposal(&self, proposal: Proposal) -> AgentOutcome {
+    ///
+    /// `peer` は提案してきた A とのセッション。承認したときだけ、閾値署名に使う。
+    pub async fn handle_proposal(&self, proposal: Proposal, peer: &mut T::Peer) -> AgentOutcome {
         let _serial = self.serial.lock().await;
         let wallet = proposal.wallet;
 
@@ -224,7 +229,10 @@ where
                 AgentOutcome::Frozen
             }
             (Verdict::Approve, Some(prepared)) => {
-                match self.submit(wallet, prepared, ApprovalOrigin::Judge).await {
+                match self
+                    .submit(wallet, prepared, ApprovalOrigin::Judge, peer)
+                    .await
+                {
                     Ok(tx_hash) => {
                         self.parts
                             .notifier
@@ -474,6 +482,7 @@ where
         wallet: Address,
         prepared: Prepared,
         origin: ApprovalOrigin,
+        peer: &mut T::Peer,
     ) -> Result<B256, SubmitError> {
         self.approvals.insert(Approval {
             key: prepared.key,
@@ -483,7 +492,7 @@ where
         let (now, pending_nonce) = self.time_and_nonce(wallet).await?;
         let approved = self.approvals.redeem(&prepared.key, &now, pending_nonce)?;
 
-        let signature = self.parts.signer.sign(approved).await?;
+        let signature = self.parts.signer.sign(approved, peer).await?;
         let recovered = signature
             .recover_address_from_prehash(&prepared.key.signing_hash)
             .map_err(|_| SubmitError::BadSignature)?;

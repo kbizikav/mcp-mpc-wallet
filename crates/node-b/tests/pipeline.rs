@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! 判定ノード B のパイプラインが不変条件を守ることを、モックを使って確かめる。
 
 use alloy_consensus::{SignableTransaction, TxEip1559};
@@ -80,12 +82,13 @@ fn build(setup: Setup) -> Node {
         AuditLog::new(MemorySink::default()),
     );
     if setup.policy {
-        node.install_policy_for_tests(Policy {
+        node.install_unverified_policy(Policy {
             wallet: wallet(),
             version: 1,
             text: "Transfers up to 0.05 ETH to anyone are fine. Never grant token allowances."
                 .into(),
-        });
+        })
+        .unwrap();
     }
     node
 }
@@ -181,7 +184,7 @@ async fn approves_signs_and_submits_small_transfer() {
         llm: all("approve", "ok"),
         ..Setup::default()
     });
-    let outcome = node.handle_proposal(coffee()).await;
+    let outcome = node.handle_proposal(coffee(), &mut ()).await;
 
     let sent = node.parts().chain.sent();
     assert_eq!(sent.len(), 1, "B broadcasts the signed tx itself");
@@ -209,7 +212,7 @@ async fn rejects_malformed_transaction_without_simulating() {
     let mut p = coffee();
     p.unsigned_tx = Bytes::from_static(&[0x02, 0xc0, 0x01]);
     assert_eq!(
-        node.handle_proposal(p).await,
+        node.handle_proposal(p, &mut ()).await,
         rejected(CoarseReason::InvalidRequest)
     );
     assert!(node.parts().simulator.requests().is_empty());
@@ -221,7 +224,7 @@ async fn rejects_wrong_chain_id() {
     let mut mainnet = tx(BOB, 1, vec![]);
     mainnet.chain_id = 1;
     assert_eq!(
-        node.handle_proposal(proposal(&mainnet, "")).await,
+        node.handle_proposal(proposal(&mainnet, ""), &mut ()).await,
         rejected(CoarseReason::InvalidRequest)
     );
 
@@ -229,7 +232,7 @@ async fn rejects_wrong_chain_id() {
     let mut p = coffee();
     p.chain_id = 1;
     assert_eq!(
-        node.handle_proposal(p).await,
+        node.handle_proposal(p, &mut ()).await,
         rejected(CoarseReason::InvalidRequest)
     );
 }
@@ -242,7 +245,7 @@ async fn rejects_future_and_stale_nonce() {
         let mut t = tx(BOB, 1, vec![]);
         t.nonce = nonce;
         assert_eq!(
-            node.handle_proposal(proposal(&t, "")).await,
+            node.handle_proposal(proposal(&t, ""), &mut ()).await,
             rejected(CoarseReason::InvalidRequest)
         );
     }
@@ -255,7 +258,7 @@ async fn rejects_unknown_wallet() {
     let mut p = coffee();
     p.wallet = Address::repeat_byte(0x99);
     assert_eq!(
-        node.handle_proposal(p).await,
+        node.handle_proposal(p, &mut ()).await,
         rejected(CoarseReason::InvalidRequest)
     );
 }
@@ -265,7 +268,7 @@ async fn rpc_outage_rejects_as_unavailable() {
     let node = build(Setup::default());
     node.parts().chain.set_available(false);
     assert_eq!(
-        node.handle_proposal(coffee()).await,
+        node.handle_proposal(coffee(), &mut ()).await,
         rejected(CoarseReason::Unavailable)
     );
 }
@@ -276,7 +279,7 @@ async fn without_policy_asks_the_user() {
         policy: false,
         ..Setup::default()
     });
-    assert!(is_pending(&node.handle_proposal(coffee()).await));
+    assert!(is_pending(&node.handle_proposal(coffee(), &mut ()).await));
     assert!(node.parts().llm.requests().is_empty());
     assert!(node.parts().chain.sent().is_empty());
 }
@@ -289,7 +292,7 @@ async fn simulator_outage_rejects() {
         ..Setup::default()
     });
     assert_eq!(
-        node.handle_proposal(coffee()).await,
+        node.handle_proposal(coffee(), &mut ()).await,
         rejected(CoarseReason::Unavailable)
     );
     assert!(node.parts().llm.requests().is_empty());
@@ -305,7 +308,7 @@ async fn reverting_transaction_rejects() {
         ..Setup::default()
     });
     assert_eq!(
-        node.handle_proposal(coffee()).await,
+        node.handle_proposal(coffee(), &mut ()).await,
         rejected(CoarseReason::SimulationFailed)
     );
     assert!(node.parts().chain.sent().is_empty());
@@ -323,7 +326,7 @@ async fn simulator_discrepancy_asks_the_user_without_llm() {
         llm: all("approve", "ok"),
         ..Setup::default()
     });
-    assert!(is_pending(&node.handle_proposal(coffee()).await));
+    assert!(is_pending(&node.handle_proposal(coffee(), &mut ()).await));
     assert!(node.parts().llm.requests().is_empty());
     assert!(node.parts().chain.sent().is_empty());
 }
@@ -339,7 +342,7 @@ async fn llm_disagreement_asks_the_user() {
         ],
         ..Setup::default()
     });
-    assert!(is_pending(&node.handle_proposal(coffee()).await));
+    assert!(is_pending(&node.handle_proposal(coffee(), &mut ()).await));
     assert!(node.parts().chain.sent().is_empty());
 }
 
@@ -363,7 +366,7 @@ async fn llm_failures_never_approve() {
             llm: failing,
             ..Setup::default()
         });
-        let outcome = node.handle_proposal(coffee()).await;
+        let outcome = node.handle_proposal(coffee(), &mut ()).await;
         assert!(is_pending(&outcome), "{outcome:?}");
         assert!(node.parts().chain.sent().is_empty());
     }
@@ -382,7 +385,7 @@ async fn attacker_strings_stay_in_the_data_region() {
 
     let input = encode_erc20_transfer(BOB, U256::from(5));
     let outcome = node
-        .handle_proposal(proposal(&tx(TOKEN, 0, input), INJECTION))
+        .handle_proposal(proposal(&tx(TOKEN, 0, input), INJECTION), &mut ())
         .await;
     assert!(matches!(outcome, AgentOutcome::Submitted { .. }));
 
@@ -416,7 +419,7 @@ async fn agent_only_sees_coarse_reason() {
 
     let input = encode_erc20_approve(BOB, U256::MAX);
     let outcome = node
-        .handle_proposal(proposal(&tx(TOKEN, 0, input), ""))
+        .handle_proposal(proposal(&tx(TOKEN, 0, input), ""), &mut ())
         .await;
     assert_eq!(outcome, rejected(CoarseReason::PolicyViolation));
     assert!(
@@ -442,7 +445,7 @@ async fn repeated_rejects_freeze_the_wallet() {
     bad.nonce = 99;
     for _ in 0..3 {
         assert_eq!(
-            node.handle_proposal(proposal(&bad, "")).await,
+            node.handle_proposal(proposal(&bad, ""), &mut ()).await,
             rejected(CoarseReason::InvalidRequest)
         );
     }
@@ -455,7 +458,10 @@ async fn repeated_rejects_freeze_the_wallet() {
     assert!(frozen_notice);
 
     // 凍結後は正しい提案でも処理しない
-    assert_eq!(node.handle_proposal(coffee()).await, AgentOutcome::Frozen);
+    assert_eq!(
+        node.handle_proposal(coffee(), &mut ()).await,
+        AgentOutcome::Frozen
+    );
     assert!(node.parts().simulator.requests().is_empty());
 }
 
@@ -470,10 +476,10 @@ async fn rate_limit_applies_per_wallet() {
         ..Setup::default()
     });
     for _ in 0..2 {
-        assert!(is_pending(&node.handle_proposal(coffee()).await));
+        assert!(is_pending(&node.handle_proposal(coffee(), &mut ()).await));
     }
     assert_eq!(
-        node.handle_proposal(coffee()).await,
+        node.handle_proposal(coffee(), &mut ()).await,
         rejected(CoarseReason::RateLimited)
     );
 }
@@ -486,7 +492,10 @@ async fn user_freeze_blocks_proposals() {
         ..Setup::default()
     });
     node.freeze(wallet());
-    assert_eq!(node.handle_proposal(coffee()).await, AgentOutcome::Frozen);
+    assert_eq!(
+        node.handle_proposal(coffee(), &mut ()).await,
+        AgentOutcome::Frozen
+    );
     assert!(node.parts().chain.sent().is_empty());
 }
 
@@ -497,10 +506,10 @@ async fn every_judgement_is_audited_in_a_valid_chain() {
         llm: all("approve", "ok"),
         ..Setup::default()
     });
-    node.handle_proposal(coffee()).await;
+    node.handle_proposal(coffee(), &mut ()).await;
     let mut bad = coffee();
     bad.chain_id = 1;
-    node.handle_proposal(bad).await;
+    node.handle_proposal(bad, &mut ()).await;
 
     let log = node.audit_log();
     let entries = &log.sink().entries;

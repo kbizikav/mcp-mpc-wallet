@@ -5,7 +5,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use alloy_primitives::{Address, B256, Bytes, U64};
+use alloy_primitives::{Address, B256, Bytes, U64, U256};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -36,9 +36,32 @@ struct RpcError {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Block {
     number: U64,
     timestamp: U64,
+    base_fee_per_gas: Option<U64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Receipt {
+    status: Option<U64>,
+    block_number: Option<U64>,
+}
+
+/// 手数料の提案値。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeeSuggestion {
+    pub max_fee_per_gas: u128,
+    pub max_priority_fee_per_gas: u128,
+}
+
+/// 採掘された tx のレシート。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReceiptInfo {
+    pub success: bool,
+    pub block_number: u64,
 }
 
 impl JsonRpcClient {
@@ -89,6 +112,66 @@ impl JsonRpcClient {
             )));
         }
         parse_response(method, &body)
+    }
+}
+
+/// A(ユーザーの PC)が tx を組み立てるときに使う読み取り。B の判定には使わない。
+impl JsonRpcClient {
+    pub async fn balance(&self, address: Address) -> Result<U256, ChainError> {
+        self.call("eth_getBalance", serde_json::json!([address, "latest"]))
+            .await
+    }
+
+    pub async fn estimate_gas(
+        &self,
+        from: Address,
+        to: Address,
+        value: U256,
+        input: &Bytes,
+    ) -> Result<u64, ChainError> {
+        let gas: U64 = self
+            .call(
+                "eth_estimateGas",
+                serde_json::json!([{ "from": from, "to": to, "value": value, "input": input }]),
+            )
+            .await?;
+        Ok(gas.to())
+    }
+
+    /// 最新ブロックの base fee の 2 倍に priority fee を足したものを上限にする。
+    pub async fn suggest_fees(&self) -> Result<FeeSuggestion, ChainError> {
+        let block: Block = self
+            .call("eth_getBlockByNumber", serde_json::json!(["latest", false]))
+            .await?;
+        let base_fee = block
+            .base_fee_per_gas
+            .ok_or_else(|| ChainError::Unavailable("block has no base fee".into()))?
+            .to::<u128>();
+        let priority: U256 = self
+            .call("eth_maxPriorityFeePerGas", serde_json::json!([]))
+            .await?;
+        let priority = priority.to::<u128>();
+        Ok(FeeSuggestion {
+            max_fee_per_gas: base_fee * 2 + priority,
+            max_priority_fee_per_gas: priority,
+        })
+    }
+
+    pub async fn receipt(&self, tx_hash: B256) -> Result<Option<ReceiptInfo>, ChainError> {
+        let receipt: Option<Receipt> = self
+            .call("eth_getTransactionReceipt", serde_json::json!([tx_hash]))
+            .await
+            .or_else(|e| match e {
+                // result が null のときは未採掘
+                ChainError::Unavailable(m) if m.ends_with("empty result") => Ok(None),
+                e => Err(e),
+            })?;
+        Ok(receipt.and_then(|r| {
+            Some(ReceiptInfo {
+                success: r.status? == U64::from(1),
+                block_number: r.block_number?.to(),
+            })
+        }))
     }
 }
 

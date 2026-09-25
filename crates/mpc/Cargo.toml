@@ -8,20 +8,23 @@ publish.workspace = true
 
 [features]
 # テスト専用: 1 つの鍵で署名するモック。閾値署名ではないので本番ビルドで有効にしてはいけない
-insecure-test-signer = ["dep:k256", "dep:rand_core"]
+insecure-test-signer = ["dep:k256"]
 
 [dependencies]
 alloy-primitives = { workspace = true, features = ["k256"] }
 cggmp21.workspace = true
+futures.workspace = true
 k256 = { workspace = true, optional = true }
 mw-core.workspace = true
-rand_core = { workspace = true, optional = true }
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 k256.workspace = true
 mw-mpc = { path = ".", features = ["insecure-test-signer"] }
-rand_core.workspace = true
 round-based = { version = "0.4.1", features = ["derive", "sim-async"] }
 sha3 = "0.10"
 tokio.workspace = true

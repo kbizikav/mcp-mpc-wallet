@@ -1,0 +1,37 @@
+[package]
+name = "mw-node-a"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mw-node-a"
+path = "src/main.rs"
+
+[dependencies]
+age.workspace = true
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+mw-chain.workspace = true
+mw-core.workspace = true
+mw-mpc.workspace = true
+mw-wire.workspace = true
+rand_core.workspace = true
+rmcp.workspace = true
+rustls.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "time", "io-std"] }
+tokio-rustls.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,47 @@
+[package]
+name = "mw-node-b-server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mw-node-b"
+path = "src/main.rs"
+
+[features]
+# パスキー検証なしで方針ファイルを読み込む(M5 までの開発用。本番で有効にしない)
+unverified-policy = ["mw-node-b/unverified-policy"]
+
+[dependencies]
+alloy-primitives.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+mw-audit.workspace = true
+mw-chain.workspace = true
+mw-core.workspace = true
+mw-judge.workspace = true
+mw-mpc.workspace = true
+mw-node-b.workspace = true
+mw-simulator.workspace = true
+mw-tee = { workspace = true, features = ["insecure-mock"] }
+mw-wire.workspace = true
+rand_core.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
+tokio-rustls.workspace = true
+
+[dev-dependencies]
+mw-node-a.workspace = true
+mw-node-b = { workspace = true, features = ["unverified-policy"] }
+alloy-consensus = { workspace = true, features = ["k256"] }
+alloy-eips.workspace = true
+futures.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

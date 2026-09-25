@@ -29,6 +29,8 @@ impl PolicyStore {
     }
 
     /// 検証済みの方針を登録する。古いバージョンの再送は拒否する。
+    // パスキー検証つきの登録口(M5)ができるまでは unverified-policy からしか呼ばれない
+    #[cfg_attr(not(any(test, feature = "unverified-policy")), allow(dead_code))]
     pub(crate) fn install_verified(&self, policy: Policy) -> Result<(), PolicyStoreError> {
         let mut policies = self.policies.lock().expect("policy store poisoned");
         if let Some(current) = policies.get(&policy.wallet)

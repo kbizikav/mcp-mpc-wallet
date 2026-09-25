@@ -4,7 +4,7 @@ use alloy_primitives::{Address, Signature, U256};
 use k256::ecdsa::SigningKey;
 use mw_core::ApprovedDigest;
 
-use crate::{SignError, ThresholdSigner, ensure_recovers_to};
+use crate::{SignError, ThresholdSigner};
 
 pub struct InsecureSingleKeySigner {
     key: SigningKey,
@@ -28,11 +28,13 @@ impl InsecureSingleKeySigner {
 }
 
 impl ThresholdSigner for InsecureSingleKeySigner {
+    type Peer = ();
+
     fn address(&self) -> Address {
         self.address
     }
 
-    async fn sign(&self, approved: ApprovedDigest) -> Result<Signature, SignError> {
+    async fn sign(&self, approved: ApprovedDigest, _peer: &mut ()) -> Result<Signature, SignError> {
         if approved.key().from != self.address {
             return Err(SignError::WrongWallet);
         }
@@ -45,8 +47,10 @@ impl ThresholdSigner for InsecureSingleKeySigner {
             U256::from_be_slice(&sig.s().to_bytes()),
             recid.is_y_odd(),
         );
-        ensure_recovers_to(&signature, &approved, self.address)?;
-        Ok(signature)
+        match signature.recover_address_from_prehash(&approved.key().signing_hash) {
+            Ok(recovered) if recovered == self.address => Ok(signature),
+            _ => Err(SignError::InvalidSignature),
+        }
     }
 }
 
@@ -87,7 +91,7 @@ mod tests {
         let signer = InsecureSingleKeySigner::random();
         let approved = approved_for(signer.address());
         let hash = approved.key().signing_hash;
-        let sig = signer.sign(approved).await.unwrap();
+        let sig = signer.sign(approved, &mut ()).await.unwrap();
         assert_eq!(
             sig.recover_address_from_prehash(&hash).unwrap(),
             signer.address()
@@ -99,7 +103,7 @@ mod tests {
         let signer = InsecureSingleKeySigner::random();
         let approved = approved_for(Address::repeat_byte(9));
         assert!(matches!(
-            signer.sign(approved).await,
+            signer.sign(approved, &mut ()).await,
             Err(SignError::WrongWallet)
         ));
     }

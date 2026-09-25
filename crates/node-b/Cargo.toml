@@ -7,8 +7,8 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# テスト専用: パスキー検証なしで方針を登録できるようにする
-test-util = []
+# パスキー検証なしで方針を登録できるようにする(テストと M5 までの開発用。本番で有効にしない)
+unverified-policy = []
 
 [dependencies]
 alloy-consensus.workspace = true
@@ -25,7 +25,7 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-mw-node-b = { path = ".", features = ["test-util"] }
+mw-node-b = { path = ".", features = ["unverified-policy"] }
 mw-mpc = { workspace = true, features = ["insecure-test-signer"] }
 secrecy.workspace = true
 
