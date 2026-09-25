@@ -178,6 +178,7 @@ async fn run_propose(conn: &Conn, params: ProposeParams, wait: bool) -> anyhow::
     };
     let mut b = connect(&config.node_b, config.tls.clone()).await?;
     let outcome = propose(&mut b, &config.share_a, proposal).await?;
+    let _ = b.close().await;
     report(&config, outcome, wait).await
 }
 
@@ -189,6 +190,7 @@ async fn run_resume(
     let config = wallet_config(conn).await?;
     let mut b = connect(&config.node_b, config.tls.clone()).await?;
     let outcome = resume(&mut b, &config.share_a, config.address, request_id).await?;
+    let _ = b.close().await;
     report(&config, outcome, wait).await
 }
 

@@ -135,6 +135,7 @@ impl WalletServer {
         let outcome = propose(&mut conn, &c.share_a, proposal)
             .await
             .map_err(|e| format!("judge node session failed: {e}"))?;
+        let _ = conn.close().await;
         serde_json::to_string(&outcome).map_err(|e| e.to_string())
     }
 
@@ -168,6 +169,7 @@ impl WalletServer {
         let outcome = propose_typed_data(&mut conn, &c.share_a, proposal)
             .await
             .map_err(|e| format!("judge node session failed: {e}"))?;
+        let _ = conn.close().await;
         serde_json::to_string(&outcome).map_err(|e| e.to_string())
     }
 
@@ -192,6 +194,7 @@ impl WalletServer {
         let outcome = resume(&mut conn, &c.share_a, c.address, request_id)
             .await
             .map_err(|e| format!("judge node session failed: {e}"))?;
+        let _ = conn.close().await;
         serde_json::to_string(&outcome).map_err(|e| e.to_string())
     }
 }

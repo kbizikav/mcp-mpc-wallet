@@ -206,7 +206,9 @@ async fn send(target: &Target, request: UserRequest) -> anyhow::Result<UserRespo
         &read_pem(&target.tls_dir.join("node-a.key"))?,
     )?;
     let mut conn = connect(&target.node_b, tls).await?;
-    Ok(user_request(&mut conn, request).await?)
+    let response = user_request(&mut conn, request).await?;
+    let _ = conn.close().await;
+    Ok(response)
 }
 
 async fn send_signed(

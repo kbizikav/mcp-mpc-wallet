@@ -64,6 +64,12 @@ where
         send_on(&mut self.sink, msg).await
     }
 
+    /// 送信側を閉じる(TLS なら close_notify を送る)。使い終わった接続は落とす前にこれを呼ぶ。
+    pub async fn close(mut self) -> Result<(), WireError> {
+        self.sink.close().await?;
+        Ok(())
+    }
+
     pub async fn recv(&mut self) -> Result<In, WireError> {
         if let Some(msg) = self.pending.pop_front() {
             return Ok(msg);
