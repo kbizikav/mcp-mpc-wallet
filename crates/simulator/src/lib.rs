@@ -1,7 +1,11 @@
-//! tx シミュレーションの抽象化。本実装は Tenderly Simulation API(M3)。
+//! tx シミュレーションの抽象化と、Tenderly Simulation API による実装。
 //!
 //! シミュレーション結果に含まれるトークン名・シンボルは攻撃者が制御しうるので、
 //! `UntrustedText` として保持する。
+
+pub mod tenderly;
+
+pub use tenderly::{TenderlyConfig, TenderlySimulator};
 
 use std::future::Future;
 use std::sync::Mutex;
@@ -19,6 +23,7 @@ pub struct SimulationRequest {
     pub input: Bytes,
     pub value: U256,
     pub gas_limit: u64,
+    pub max_fee_per_gas: u128,
     /// シミュレーションの基準ブロック。`None` なら最新
     pub block_number: Option<u64>,
 }
@@ -50,6 +55,9 @@ pub struct SimulationReport {
     pub block_number: u64,
     pub transfers: Vec<AssetTransfer>,
     pub allowance_changes: Vec<AllowanceChange>,
+    /// シミュレータが報告したが、このウォレットがモデル化していない変化
+    /// (NFT の移動、ApproveForAll など)。1 件でもあれば「要確認」に倒す
+    pub unrecognized_changes: Vec<String>,
     /// レスポンス本文のハッシュ。監査ログに残す
     pub raw_response_hash: B256,
 }
@@ -120,6 +128,7 @@ mod tests {
             input: Bytes::new(),
             value: U256::from(1),
             gas_limit: 21_000,
+            max_fee_per_gas: 1,
             block_number: None,
         }
     }
@@ -132,6 +141,7 @@ mod tests {
             block_number: 1,
             transfers: vec![],
             allowance_changes: vec![],
+            unrecognized_changes: vec![],
             raw_response_hash: B256::ZERO,
         };
         let sim = ScriptedSimulator::new([Ok(report.clone()), Err("down".into())]);

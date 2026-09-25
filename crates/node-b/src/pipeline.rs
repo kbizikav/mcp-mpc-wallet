@@ -330,6 +330,7 @@ where
             input: tx.input.clone(),
             value: tx.value,
             gas_limit: tx.gas_limit,
+            max_fee_per_gas: tx.max_fee_per_gas,
             block_number: Some(witness.block_number),
         };
         let prepared = Prepared {

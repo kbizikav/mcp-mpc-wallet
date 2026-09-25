@@ -125,6 +125,7 @@ fn report(
         block_number: BLOCK.number,
         transfers,
         allowance_changes,
+        unrecognized_changes: vec![],
         raw_response_hash: SIM_HASH,
     }
 }

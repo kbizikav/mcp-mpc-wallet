@@ -12,6 +12,7 @@ pub enum Discrepancy {
     MissingNativeTransfer { amount: U256 },
     MissingTokenTransfer { token: Address, amount: U256 },
     MissingAllowanceChange { token: Address, spender: Address },
+    UnrecognizedChange(String),
 }
 
 impl std::fmt::Display for Discrepancy {
@@ -36,6 +37,12 @@ impl std::fmt::Display for Discrepancy {
                 f,
                 "calldata changes the allowance of {spender} on {token} but the simulation does not"
             ),
+            Self::UnrecognizedChange(what) => {
+                write!(
+                    f,
+                    "the simulation reports an effect the wallet cannot check: {what}"
+                )
+            }
         }
     }
 }
@@ -57,6 +64,14 @@ pub fn crosscheck(
             simulated: report.block_number,
         });
     }
+
+    found.extend(
+        report
+            .unrecognized_changes
+            .iter()
+            .cloned()
+            .map(Discrepancy::UnrecognizedChange),
+    );
 
     if !tx.value.is_zero() {
         let matched = report.transfers.iter().any(|t| {
@@ -162,6 +177,7 @@ mod tests {
             block_number: 10,
             transfers,
             allowance_changes,
+            unrecognized_changes: vec![],
             raw_response_hash: B256::ZERO,
         }
     }
@@ -259,6 +275,17 @@ mod tests {
                 token: TOKEN,
                 spender: BOB
             }]
+        );
+    }
+
+    #[test]
+    fn unrecognized_changes_are_discrepancies() {
+        let tx = decoded(BOB, 0, vec![]);
+        let mut r = report(vec![], vec![]);
+        r.unrecognized_changes = vec!["ERC721 Transfer".into()];
+        assert_eq!(
+            crosscheck(WALLET, &tx, None, &r, 10),
+            vec![Discrepancy::UnrecognizedChange("ERC721 Transfer".into())]
         );
     }
 
