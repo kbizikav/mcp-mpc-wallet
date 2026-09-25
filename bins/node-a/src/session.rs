@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use alloy_primitives::{Address, B256, Bytes, keccak256};
-use mw_core::{AgentOutcome, Proposal};
+use mw_core::{AgentOutcome, Proposal, TypedDataProposal};
 use mw_mpc::protocol::{
     KeyShare, PARTIES, PARTY_A, PARTY_C, PregeneratedPrimes, ProtocolError, address_of, aux_party,
     complete_share, execution_id, issue_partial, keygen_party, presign_party, signer_index,
@@ -152,6 +152,24 @@ where
     // EIP-1559 の未署名 tx では、ペイロードの keccak256 が署名する hash
     let expected_hash = keccak256(&proposal.unsigned_tx);
     conn.send(&AtoB::Propose { proposal }).await?;
+    cosign_until_outcome(conn, share_a, expected_hash).await
+}
+
+/// EIP-712 署名を提案する。承認されたら署名(`AgentOutcome::Signed`)が返る。
+///
+/// digest は A も自分で計算し、それ以外への署名要求には応じない。
+pub async fn propose_typed_data<S>(
+    conn: &mut BConnection<S>,
+    share_a: &KeyShare,
+    proposal: TypedDataProposal,
+) -> Result<AgentOutcome, SessionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let expected_hash = mw_chain::decode_typed_data(&proposal.typed_data)
+        .map_err(|e| SessionError::Unexpected(e.to_string()))?
+        .digest;
+    conn.send(&AtoB::ProposeTypedData { proposal }).await?;
     cosign_until_outcome(conn, share_a, expected_hash).await
 }
 

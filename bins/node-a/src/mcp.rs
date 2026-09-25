@@ -7,14 +7,14 @@ use std::sync::Arc;
 
 use alloy_primitives::{Address, Bytes, U256, utils::format_ether};
 use mw_chain::JsonRpcClient;
-use mw_core::{Proposal, UntrustedText};
+use mw_core::{Proposal, TypedDataProposal, UntrustedText};
 use mw_mpc::protocol::KeyShare;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{schemars, tool, tool_router};
 use rustls::ClientConfig;
 use serde::Deserialize;
 
-use crate::session::{connect, propose, resume};
+use crate::session::{connect, propose, propose_typed_data, resume};
 use crate::txbuild::{TxParams, build, encode_unsigned};
 
 pub struct WalletConfig {
@@ -49,6 +49,15 @@ pub struct ProposeParams {
     /// calldata(0x から始まる 16 進)。省略時は空
     pub data: Option<String>,
     /// この tx の目的の説明。判定では参考情報としてだけ扱われる
+    pub note: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SignTypedDataParams {
+    /// EIP-712 の typed data(types, primaryType, domain, message)。JSON オブジェクトか、その文字列
+    pub typed_data: serde_json::Value,
+    /// 署名の目的の説明。判定では参考情報としてだけ扱われる
     pub note: String,
 }
 
@@ -124,6 +133,39 @@ impl WalletServer {
             .await
             .map_err(|e| format!("judge node unavailable: {e}"))?;
         let outcome = propose(&mut conn, &c.share_a, proposal)
+            .await
+            .map_err(|e| format!("judge node session failed: {e}"))?;
+        serde_json::to_string(&outcome).map_err(|e| e.to_string())
+    }
+
+    #[tool(
+        name = "sign_typed_data",
+        description = "Ask for an EIP-712 signature (eth_signTypedData_v4) from this wallet. \
+                       An independent judge checks what the signature authorizes (for example \
+                       token permits) against the owner's policy. Returns `signed` with the \
+                       65-byte signature, `pending_user_confirmation`, `rejected` or `frozen`."
+    )]
+    async fn sign_typed_data(
+        &self,
+        Parameters(params): Parameters<SignTypedDataParams>,
+    ) -> Result<String, String> {
+        let c = &self.config;
+        let typed_data = match params.typed_data {
+            serde_json::Value::String(s) => {
+                serde_json::from_str(&s).map_err(|e| format!("invalid `typed_data`: {e}"))?
+            }
+            other => other,
+        };
+        let proposal = TypedDataProposal {
+            wallet: c.address,
+            chain_id: c.chain_id,
+            typed_data,
+            agent_note: UntrustedText::new(params.note),
+        };
+        let mut conn = connect(&c.node_b, c.tls.clone())
+            .await
+            .map_err(|e| format!("judge node unavailable: {e}"))?;
+        let outcome = propose_typed_data(&mut conn, &c.share_a, proposal)
             .await
             .map_err(|e| format!("judge node session failed: {e}"))?;
         serde_json::to_string(&outcome).map_err(|e| e.to_string())

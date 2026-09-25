@@ -25,6 +25,18 @@ impl std::fmt::Debug for UntrustedText {
     }
 }
 
+/// エージェントが A 経由で B に送る EIP-712 署名の提案。
+///
+/// B は `typed_data` を自分でデコードして digest を計算する。署名はエージェントに返る。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypedDataProposal {
+    pub wallet: Address,
+    pub chain_id: u64,
+    /// EIP-712 の typed data(types / primaryType / domain / message)
+    pub typed_data: serde_json::Value,
+    pub agent_note: UntrustedText,
+}
+
 /// エージェントが A 経由で B に送る署名の提案。
 ///
 /// B が信用するのは `unsigned_tx` の生バイト列だけで、`agent_note` は参考情報として扱う。

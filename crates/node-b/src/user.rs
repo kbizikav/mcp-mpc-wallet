@@ -10,7 +10,7 @@ use alloy_primitives::{Address, B256, Bytes, keccak256};
 use mw_audit::{AuditRecord, AuditSink};
 use mw_chain::{ChainClient, decode_unsigned};
 use mw_core::{
-    APPROVAL_TTL_SECS, AgentOutcome, Approval, ApprovalOrigin, CoarseReason, Policy,
+    APPROVAL_TTL_SECS, AgentOutcome, Approval, ApprovalOrigin, CoarseReason, Policy, SigningKind,
     SigningRequestKey, Verdict,
 };
 use mw_judge::LlmClient;
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::guard::{Admission, FreezeState};
 use crate::notify::{UserNotice, UserNotifier};
-use crate::pipeline::{PENDING_TTL_SECS, Prepared};
+use crate::pipeline::{PENDING_TTL_SECS, Payload, Prepared};
 use crate::{Clock, JudgeNode};
 
 /// 永続化するユーザー関連の状態。
@@ -291,6 +291,7 @@ where
             return reject(CoarseReason::InvalidRequest);
         }
         let key = SigningRequestKey {
+            kind: SigningKind::Transaction,
             chain_id: decoded.tx.chain_id,
             from: wallet,
             nonce: decoded.tx.nonce,
@@ -316,26 +317,12 @@ where
         }
 
         let prepared = Prepared {
-            decoded,
+            payload: Payload::Tx(Box::new(decoded)),
             key,
             witness,
         };
-        match self.redeem_and_submit(wallet, prepared, peer).await {
-            Ok(tx_hash) => {
-                self.parts
-                    .notifier
-                    .notify(UserNotice::Submitted { wallet, tx_hash });
-                AgentOutcome::Submitted { tx_hash }
-            }
-            Err(e) => {
-                self.parts.notifier.notify(UserNotice::SubmissionFailed {
-                    wallet,
-                    request_id: signing_hash,
-                    error: e.to_string(),
-                });
-                reject(CoarseReason::Unavailable)
-            }
-        }
+        let result = self.redeem_and_submit(wallet, prepared, peer).await;
+        self.report_submission(wallet, signing_hash, result)
     }
 
     fn pending_views(&self, now: u64) -> Vec<PendingView> {
@@ -376,7 +363,8 @@ where
         }
 
         let (witness, pending_nonce) = self.time_and_nonce(wallet).await?;
-        if pending_nonce != key.nonce {
+        // typed data にはアカウントの nonce がないので、tx のときだけ確かめる
+        if key.kind == SigningKind::Transaction && pending_nonce != key.nonce {
             self.pending
                 .lock()
                 .expect("pending poisoned")
@@ -456,23 +444,7 @@ where
             }
         };
 
-        match self.redeem_and_submit(wallet, prepared, peer).await {
-            Ok(tx_hash) => {
-                self.parts
-                    .notifier
-                    .notify(UserNotice::Submitted { wallet, tx_hash });
-                AgentOutcome::Submitted { tx_hash }
-            }
-            Err(e) => {
-                self.parts.notifier.notify(UserNotice::SubmissionFailed {
-                    wallet,
-                    request_id,
-                    error: e.to_string(),
-                });
-                AgentOutcome::Rejected {
-                    reason: CoarseReason::Unavailable,
-                }
-            }
-        }
+        let result = self.redeem_and_submit(wallet, prepared, peer).await;
+        self.report_submission(wallet, request_id, result)
     }
 }

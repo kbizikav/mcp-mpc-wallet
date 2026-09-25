@@ -26,6 +26,11 @@ pub enum UserNotice {
         wallet: Address,
         tx_hash: B256,
     },
+    /// EIP-712 の署名をエージェントに渡した
+    Signed {
+        wallet: Address,
+        request_id: B256,
+    },
     ApprovedByUser {
         wallet: Address,
         request_id: B256,

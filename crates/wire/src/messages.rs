@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, B256, Bytes};
-use mw_core::{AgentOutcome, Proposal};
+use mw_core::{AgentOutcome, Proposal, TypedDataProposal};
 use mw_mpc::net::WireMsg;
 use mw_policy::{SignedUserOperation, UserRequest, UserResponse};
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,10 @@ pub enum AtoB {
     /// 署名の提案。B が判定し、承認なら続けて `SignRequest` を送ってくる
     Propose {
         proposal: Proposal,
+    },
+    /// EIP-712 署名の提案。承認されたら署名が `Outcome` で返る
+    ProposeTypedData {
+        proposal: TypedDataProposal,
     },
     /// ユーザーが承認した要求の署名・送信を再開する
     Resume {

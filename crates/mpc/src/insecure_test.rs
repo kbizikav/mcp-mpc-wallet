@@ -57,7 +57,9 @@ impl ThresholdSigner for InsecureSingleKeySigner {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::B256;
-    use mw_core::{Approval, ApprovalOrigin, ApprovalRegistry, SigningRequestKey, TimeWitness};
+    use mw_core::{
+        Approval, ApprovalOrigin, ApprovalRegistry, SigningKind, SigningRequestKey, TimeWitness,
+    };
 
     use super::*;
 
@@ -69,6 +71,7 @@ mod tests {
 
     fn approved_for(from: Address) -> ApprovedDigest {
         let key = SigningRequestKey {
+            kind: SigningKind::Transaction,
             chain_id: 84532,
             from,
             nonce: 0,

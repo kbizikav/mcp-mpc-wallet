@@ -42,6 +42,11 @@ where
                 after_request();
                 session.conn.send(&BtoA::Outcome { outcome }).await?;
             }
+            AtoB::ProposeTypedData { proposal } => {
+                let outcome = node.handle_typed_data(proposal, &mut session).await;
+                after_request();
+                session.conn.send(&BtoA::Outcome { outcome }).await?;
+            }
             AtoB::Resume { wallet, request_id } => {
                 let outcome = node.resume(wallet, request_id, &mut session).await;
                 after_request();
@@ -83,6 +88,7 @@ fn kind(msg: &AtoB) -> &'static str {
     match msg {
         AtoB::Propose { .. } => "propose",
         AtoB::Resume { .. } => "resume",
+        AtoB::ProposeTypedData { .. } => "propose_typed_data",
         AtoB::User { .. } => "user",
         AtoB::Recover { .. } => "recover",
         AtoB::Keygen { .. } => "keygen",

@@ -9,11 +9,14 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use alloy_primitives::{Address, B256, keccak256};
+use alloy_primitives::{Bytes, Signature};
 use mw_audit::{AuditLog, AuditRecord, AuditSink};
-use mw_chain::{ChainClient, DecodedTx, decode_known_call, decode_unsigned, encode_signed};
+use mw_chain::{
+    ChainClient, DecodedTx, decode_known_call, decode_typed_data, decode_unsigned, encode_signed,
+};
 use mw_core::{
     AgentOutcome, Approval, ApprovalOrigin, ApprovalRegistry, CoarseReason, Policy, PolicyHash,
-    Proposal, SigningRequestKey, TimeWitness, Verdict,
+    Proposal, SigningKind, SigningRequestKey, TimeWitness, TypedDataProposal, Verdict,
 };
 use mw_judge::{LlmClient, build_request, escape_data, judge};
 use mw_mpc::ThresholdSigner;
@@ -25,7 +28,7 @@ use crate::crosscheck::crosscheck;
 use crate::guard::{Admission, GuardConfig, WalletGuard};
 use crate::notify::{UserNotice, UserNotifier};
 use crate::policy_store::PolicyStore;
-use crate::signals::{Effects, JudgeData};
+use crate::signals::{Effects, JudgeData, TypedDataEffects};
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
@@ -67,11 +70,25 @@ pub struct Components<C, S, L, T, N, K> {
     pub clock: K,
 }
 
+/// 署名するもの。
+pub(crate) enum Payload {
+    /// B が署名して自分で送信する
+    Tx(Box<DecodedTx>),
+    /// B が署名して、署名をエージェントに返す
+    TypedData,
+}
+
 /// 署名に進むために必要な、検証済みの情報。
 pub(crate) struct Prepared {
-    pub(crate) decoded: DecodedTx,
+    pub(crate) payload: Payload,
     pub(crate) key: SigningRequestKey,
     pub(crate) witness: TimeWitness,
+}
+
+/// 署名の結果。
+pub(crate) enum Submission {
+    Sent(B256),
+    Signed(Signature),
 }
 
 /// ユーザーの確認を待っている要求。
@@ -211,32 +228,56 @@ where
     /// `peer` は提案してきた A とのセッション。承認したときだけ、閾値署名に使う。
     pub async fn handle_proposal(&self, proposal: Proposal, peer: &mut T::Peer) -> AgentOutcome {
         let _serial = self.serial.lock().await;
-        let wallet = proposal.wallet;
+        if let Some(outcome) = self.admit(proposal.wallet) {
+            return outcome;
+        }
+        let assessment = self.assess(&proposal).await;
+        self.conclude(proposal.wallet, assessment, peer).await
+    }
 
+    /// EIP-712 署名の提案を処理する。承認されたら署名をエージェントに返す。
+    pub async fn handle_typed_data(
+        &self,
+        proposal: TypedDataProposal,
+        peer: &mut T::Peer,
+    ) -> AgentOutcome {
+        let _serial = self.serial.lock().await;
+        if let Some(outcome) = self.admit(proposal.wallet) {
+            return outcome;
+        }
+        let assessment = self.assess_typed_data(&proposal).await;
+        self.conclude(proposal.wallet, assessment, peer).await
+    }
+
+    /// 受け付けない提案なら、その結果を返す。
+    fn admit(&self, wallet: Address) -> Option<AgentOutcome> {
         // 別のウォレット宛ての提案は、レート制限の状態を作る前に弾く
         if wallet != self.wallet() {
-            return AgentOutcome::Rejected {
+            return Some(AgentOutcome::Rejected {
                 reason: CoarseReason::InvalidRequest,
-            };
+            });
         }
-
         let admission = self
             .guard
             .lock()
             .expect("guard poisoned")
             .admit(wallet, self.parts.clock.now_unix());
         match admission {
-            Admission::Frozen => return AgentOutcome::Frozen,
-            Admission::RateLimited => {
-                return AgentOutcome::Rejected {
-                    reason: CoarseReason::RateLimited,
-                };
-            }
-            Admission::Allowed => {}
+            Admission::Frozen => Some(AgentOutcome::Frozen),
+            Admission::RateLimited => Some(AgentOutcome::Rejected {
+                reason: CoarseReason::RateLimited,
+            }),
+            Admission::Allowed => None,
         }
+    }
 
-        let assessment = self.assess(&proposal).await;
-
+    /// 判定を記録し、承認なら署名、要確認なら保留、拒否ならユーザーに詳細を通知する。
+    async fn conclude(
+        &self,
+        wallet: Address,
+        assessment: Assessment,
+        peer: &mut T::Peer,
+    ) -> AgentOutcome {
         // 監査ログに残せなければ、署名に進まない
         if let Err(e) = self.record_audit(wallet, &assessment) {
             self.parts.notifier.notify(UserNotice::SubmissionFailed {
@@ -267,27 +308,10 @@ where
                 AgentOutcome::Frozen
             }
             (Verdict::Approve, Some(prepared)) => {
-                match self
+                let result = self
                     .submit(wallet, prepared, ApprovalOrigin::Judge, peer)
-                    .await
-                {
-                    Ok(tx_hash) => {
-                        self.parts
-                            .notifier
-                            .notify(UserNotice::Submitted { wallet, tx_hash });
-                        AgentOutcome::Submitted { tx_hash }
-                    }
-                    Err(e) => {
-                        self.parts.notifier.notify(UserNotice::SubmissionFailed {
-                            wallet,
-                            request_id: assessment.request_id,
-                            error: e.to_string(),
-                        });
-                        AgentOutcome::Rejected {
-                            reason: CoarseReason::Unavailable,
-                        }
-                    }
-                }
+                    .await;
+                self.report_submission(wallet, assessment.request_id, result)
             }
             (Verdict::NeedsUserConfirmation, Some(prepared)) => {
                 self.parts.notifier.notify(UserNotice::NeedsConfirmation {
@@ -319,6 +343,41 @@ where
                 });
                 AgentOutcome::Rejected {
                     reason: assessment.coarse,
+                }
+            }
+        }
+    }
+
+    /// 署名の結果をユーザーに通知し、エージェントに返す結果にする。
+    pub(crate) fn report_submission(
+        &self,
+        wallet: Address,
+        request_id: B256,
+        result: Result<Submission, SubmitError>,
+    ) -> AgentOutcome {
+        match result {
+            Ok(Submission::Sent(tx_hash)) => {
+                self.parts
+                    .notifier
+                    .notify(UserNotice::Submitted { wallet, tx_hash });
+                AgentOutcome::Submitted { tx_hash }
+            }
+            Ok(Submission::Signed(signature)) => {
+                self.parts
+                    .notifier
+                    .notify(UserNotice::Signed { wallet, request_id });
+                AgentOutcome::Signed {
+                    signature: Bytes::copy_from_slice(&signature.as_bytes()),
+                }
+            }
+            Err(e) => {
+                self.parts.notifier.notify(UserNotice::SubmissionFailed {
+                    wallet,
+                    request_id,
+                    error: e.to_string(),
+                });
+                AgentOutcome::Rejected {
+                    reason: CoarseReason::Unavailable,
                 }
             }
         }
@@ -372,6 +431,7 @@ where
         }
 
         let key = SigningRequestKey {
+            kind: SigningKind::Transaction,
             chain_id: tx.chain_id,
             from: wallet,
             nonce: tx.nonce,
@@ -390,7 +450,7 @@ where
             block_number: Some(witness.block_number),
         };
         let prepared = Prepared {
-            decoded: decoded.clone(),
+            payload: Payload::Tx(Box::new(decoded.clone())),
             key,
             witness,
         };
@@ -466,17 +526,115 @@ where
         }
 
         // 7. 効果を方針と照合する
-        self.llm_judgement(&policy, &effects, proposal, base).await
+        self.llm_judgement(&policy, &effects, &proposal.agent_note, base)
+            .await
     }
 
-    async fn llm_judgement(
+    async fn assess_typed_data(&self, proposal: &TypedDataProposal) -> Assessment {
+        let wallet = proposal.wallet;
+
+        // 1. typed data を自分でデコードし、digest を自分で計算する
+        let decoded = match decode_typed_data(&proposal.typed_data) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                let raw = serde_json::to_vec(&proposal.typed_data).unwrap_or_default();
+                return Assessment::reject(
+                    keccak256(&raw),
+                    CoarseReason::InvalidRequest,
+                    format!("cannot decode typed data: {e}"),
+                );
+            }
+        };
+        let request_id = decoded.digest;
+
+        // 2. chainId を束縛する。domain に chainId がない署名は、別のチェーンでも使えうる
+        if proposal.chain_id != self.config.chain_id
+            || decoded
+                .chain_id
+                .is_some_and(|id| id != self.config.chain_id)
+        {
+            return Assessment::reject(
+                request_id,
+                CoarseReason::InvalidRequest,
+                format!(
+                    "chain id mismatch: proposal {}, domain {:?}, node {}",
+                    proposal.chain_id, decoded.chain_id, self.config.chain_id
+                ),
+            );
+        }
+        let witness = match self.time_and_nonce(wallet).await {
+            Ok((witness, _)) => witness,
+            Err(e) => {
+                return Assessment::reject(request_id, CoarseReason::Unavailable, e.to_string());
+            }
+        };
+        let prepared = Prepared {
+            payload: Payload::TypedData,
+            key: SigningRequestKey {
+                kind: SigningKind::TypedData,
+                chain_id: self.config.chain_id,
+                from: wallet,
+                nonce: 0,
+                signing_hash: decoded.digest,
+                payload_hash: decoded.payload_hash(),
+            },
+            witness,
+        };
+        let effects = TypedDataEffects::new(wallet, &decoded);
+        let input_summary = escape_data(&effects);
+        let needs_user = |reason: &str, policy_hash| Assessment {
+            verdict: Verdict::NeedsUserConfirmation,
+            coarse: CoarseReason::PolicyViolation,
+            reasons: vec![reason.to_owned()],
+            summary: None,
+            request_id,
+            input_summary: input_summary.clone(),
+            policy_hash,
+            simulation_hash: None,
+            prepared: None,
+        };
+
+        let Some(policy) = self.policies.get(wallet) else {
+            return Assessment {
+                prepared: Some(prepared),
+                ..needs_user("no policy is registered for this wallet", None)
+            };
+        };
+        let policy_hash = Some(policy.hash());
+        if decoded.chain_id.is_none() {
+            return Assessment {
+                prepared: Some(prepared),
+                ..needs_user(
+                    "the typed data has no chainId, so the signature may be valid on other chains",
+                    policy_hash,
+                )
+            };
+        }
+
+        // 3. 効果を方針と照合する(署名はオフチェーンなのでシミュレーションはない)
+        let base = Assessment {
+            verdict: Verdict::Reject,
+            coarse: CoarseReason::PolicyViolation,
+            reasons: Vec::new(),
+            summary: None,
+            request_id,
+            input_summary,
+            policy_hash,
+            simulation_hash: None,
+            prepared: Some(prepared),
+        };
+        self.llm_judgement(&policy, &effects, &proposal.agent_note, base)
+            .await
+    }
+
+    async fn llm_judgement<E: serde::Serialize>(
         &self,
         policy: &Policy,
-        effects: &Effects,
-        proposal: &Proposal,
+        effects: &E,
+        agent_note: &mw_core::UntrustedText,
         base: Assessment,
     ) -> Assessment {
-        let data = JudgeData::new(&policy.text, effects, &proposal.agent_note);
+        let data = JudgeData::new(&policy.text, effects, agent_note);
         let request = build_request(&data);
         let outcome = judge(&self.parts.llm, &request, self.config.llm_samples).await;
         let summary = outcome.samples.iter().find_map(|s| match s {
@@ -534,7 +692,7 @@ where
         prepared: Prepared,
         origin: ApprovalOrigin,
         peer: &mut T::Peer,
-    ) -> Result<B256, SubmitError> {
+    ) -> Result<Submission, SubmitError> {
         self.approvals.insert(Approval {
             key: prepared.key,
             issued: prepared.witness,
@@ -549,7 +707,7 @@ where
         wallet: Address,
         prepared: Prepared,
         peer: &mut T::Peer,
-    ) -> Result<B256, SubmitError> {
+    ) -> Result<Submission, SubmitError> {
         let (now, pending_nonce) = self.time_and_nonce(wallet).await?;
         let approved = self.approvals.redeem(&prepared.key, &now, pending_nonce)?;
 
@@ -561,8 +719,13 @@ where
             return Err(SubmitError::BadSignature);
         }
 
+        let decoded = match prepared.payload {
+            // EIP-712 の署名はエージェントに返す(オーナーの判断で不変条件 5 の例外とした)
+            Payload::TypedData => return Ok(Submission::Signed(signature)),
+            Payload::Tx(decoded) => *decoded,
+        };
         // 署名済み tx は B の外に出さない。自分で送信し、hash だけを返す(不変条件 5)
-        let (raw, tx_hash) = encode_signed(prepared.decoded.tx, signature);
+        let (raw, tx_hash) = encode_signed(decoded.tx, signature);
         let returned = self.parts.chain.send_raw_transaction(raw).await?;
         if returned != tx_hash {
             return Err(SubmitError::HashMismatch {
@@ -570,6 +733,6 @@ where
                 returned,
             });
         }
-        Ok(tx_hash)
+        Ok(Submission::Sent(tx_hash))
     }
 }

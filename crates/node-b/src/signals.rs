@@ -4,7 +4,7 @@
 //! 攻撃者が制御しうる値はフィールド名の末尾を `_untrusted` にし、長さも切り詰める。
 
 use alloy_primitives::{Address, U256, utils::format_ether};
-use mw_chain::{DecodedTx, KnownCall};
+use mw_chain::{DecodedTx, DecodedTypedData, KnownCall, KnownTypedData};
 use mw_core::UntrustedText;
 use mw_simulator::{AssetTransfer, SimulationReport};
 use serde::Serialize;
@@ -225,16 +225,128 @@ impl Effects {
     }
 }
 
-/// LLM のデータ領域に入れる文書。
+const MAX_MESSAGE_LEN: usize = 4_000;
+
+/// EIP-712 署名が与える権限。
 #[derive(Clone, Debug, Serialize)]
-pub struct JudgeData<'a> {
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PermitEffect {
+    Erc2612Permit {
+        token: Option<Address>,
+        owner_is_wallet: bool,
+        spender: Address,
+        amount_raw: String,
+        unlimited: bool,
+        deadline: String,
+    },
+    Permit2Allowance {
+        token: Address,
+        spender: Address,
+        amount_raw: String,
+        unlimited: bool,
+        expiration: String,
+        sig_deadline: String,
+    },
+    Permit2Transfer {
+        token: Address,
+        spender: Address,
+        amount_raw: String,
+        unlimited: bool,
+        deadline: String,
+    },
+}
+
+/// EIP-712 署名の「効果」。署名はオフチェーンなのでシミュレーションはない。
+#[derive(Clone, Debug, Serialize)]
+pub struct TypedDataEffects {
+    pub kind: &'static str,
+    pub wallet: Address,
+    pub chain_id: Option<u64>,
+    pub verifying_contract: Option<Address>,
+    pub primary_type_untrusted: String,
+    pub domain_name_untrusted: Option<String>,
+    /// 既知の権限付与型なら、その内容(B が読み取ったもの)
+    pub grants: Option<PermitEffect>,
+    /// message 全体(攻撃者が決められる。長さは切り詰める)
+    pub message_untrusted: String,
+}
+
+impl TypedDataEffects {
+    pub fn new(wallet: Address, decoded: &DecodedTypedData) -> Self {
+        let grants = decoded.known.as_ref().map(|k| match *k {
+            KnownTypedData::Erc2612Permit {
+                token,
+                owner,
+                spender,
+                value,
+                deadline,
+            } => PermitEffect::Erc2612Permit {
+                token,
+                owner_is_wallet: owner == wallet,
+                spender,
+                amount_raw: value.to_string(),
+                unlimited: is_unlimited(value),
+                deadline: deadline.to_string(),
+            },
+            KnownTypedData::Permit2Allowance {
+                token,
+                amount,
+                expiration,
+                spender,
+                sig_deadline,
+            } => PermitEffect::Permit2Allowance {
+                token,
+                spender,
+                amount_raw: amount.to_string(),
+                unlimited: is_unlimited(amount),
+                expiration: expiration.to_string(),
+                sig_deadline: sig_deadline.to_string(),
+            },
+            KnownTypedData::Permit2Transfer {
+                token,
+                amount,
+                spender,
+                deadline,
+            } => PermitEffect::Permit2Transfer {
+                token,
+                spender,
+                amount_raw: amount.to_string(),
+                unlimited: is_unlimited(amount),
+                deadline: deadline.to_string(),
+            },
+        });
+        let message = serde_json::to_string(&decoded.typed.message).unwrap_or_default();
+        Self {
+            kind: "eip712_signature",
+            wallet,
+            chain_id: decoded.chain_id,
+            verifying_contract: decoded.verifying_contract,
+            primary_type_untrusted: truncate(
+                &UntrustedText::new(decoded.typed.primary_type.clone()),
+                MAX_SYMBOL_LEN * 2,
+            ),
+            domain_name_untrusted: decoded
+                .typed
+                .domain
+                .name
+                .as_ref()
+                .map(|n| truncate(&UntrustedText::new(n.to_string()), MAX_SYMBOL_LEN * 2)),
+            grants,
+            message_untrusted: truncate(&UntrustedText::new(message), MAX_MESSAGE_LEN),
+        }
+    }
+}
+
+/// LLM のデータ領域に入れる文書。`effects` は tx なら `Effects`、署名なら `TypedDataEffects`。
+#[derive(Clone, Debug, Serialize)]
+pub struct JudgeData<'a, E> {
     pub user_policy: &'a str,
-    pub effects: &'a Effects,
+    pub effects: &'a E,
     pub agent_note_untrusted: String,
 }
 
-impl<'a> JudgeData<'a> {
-    pub fn new(user_policy: &'a str, effects: &'a Effects, agent_note: &UntrustedText) -> Self {
+impl<'a, E: Serialize> JudgeData<'a, E> {
+    pub fn new(user_policy: &'a str, effects: &'a E, agent_note: &UntrustedText) -> Self {
         Self {
             user_policy,
             effects,

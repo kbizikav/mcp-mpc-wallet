@@ -266,6 +266,9 @@ async fn keygen_propose_sign_and_submit() {
     // A をなくしたとき: B+C で復旧
     recovery_with_b_and_c(share_b.clone(), &share_c).await;
 
+    // EIP-712: A+B で署名し、署名が A(エージェント)に返る
+    typed_data_signature(share_b.clone(), &share_a).await;
+
     // 拒否される提案: 署名要求は来ず、何も送信されない
     let node = self::node(share_b, "reject");
     let (outcome, _) = run_proposal(&node, &share_a, proposal(wallet)).await;
@@ -425,4 +428,44 @@ async fn recovery_with_b_and_c(share_b: KeyShare, share_c: &KeyShare) {
     let envelope = TxEnvelope::decode_2718(&mut sent[0].as_ref()).unwrap();
     assert_eq!(*envelope.tx_hash(), tx_hash);
     assert_eq!(envelope.recover_signer().unwrap(), wallet);
+}
+
+async fn typed_data_signature(share_b: KeyShare, share_a: &KeyShare) {
+    let node = node_with(share_b, "approve", true);
+    let wallet = node.wallet();
+    let typed = serde_json::json!({
+        "types": {
+            "EIP712Domain": [
+                {"name": "name", "type": "string"},
+                {"name": "chainId", "type": "uint256"},
+                {"name": "verifyingContract", "type": "address"}
+            ],
+            "Mail": [{"name": "contents", "type": "string"}]
+        },
+        "primaryType": "Mail",
+        "domain": {
+            "name": "Test",
+            "chainId": CHAIN_ID,
+            "verifyingContract": "0x0000000000000000000000000000000000000001"
+        },
+        "message": {"contents": "hello"}
+    });
+    let proposal = mw_core::TypedDataProposal {
+        wallet,
+        chain_id: CHAIN_ID,
+        typed_data: typed.clone(),
+        agent_note: UntrustedText::new("login"),
+    };
+    let outcome = with_b(&node, async |c| {
+        mw_node_a::session::propose_typed_data(c, share_a, proposal).await
+    })
+    .await
+    .unwrap();
+    let AgentOutcome::Signed { signature } = outcome else {
+        panic!("expected a signature, got {outcome:?}");
+    };
+    let sig = alloy_primitives::Signature::try_from(signature.as_ref()).unwrap();
+    let digest = mw_chain::decode_typed_data(&typed).unwrap().digest;
+    assert_eq!(sig.recover_address_from_prehash(&digest).unwrap(), wallet);
+    assert!(node.parts().chain.sent().is_empty());
 }

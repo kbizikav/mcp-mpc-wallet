@@ -26,11 +26,23 @@ pub enum ApprovalOrigin {
     User,
 }
 
+/// 署名するものの種類。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SigningKind {
+    /// EIP-1559 tx。アカウントの nonce に束縛する
+    Transaction,
+    /// EIP-712 typed data。アカウントの nonce はないので digest 全体に束縛する
+    TypedData,
+}
+
 /// 署名要求を一意に指す値。承認時と署名時で完全に一致しなければならない。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SigningRequestKey {
+    pub kind: SigningKind,
     pub chain_id: u64,
     pub from: Address,
+    /// tx の nonce。typed data では 0
     pub nonce: u64,
     /// 署名対象のハッシュ(tx の signing hash、または EIP-712 digest)
     pub signing_hash: B256,
@@ -140,7 +152,7 @@ impl ApprovalRegistry {
             return Err(ApprovalError::Mismatch);
         }
         approval.check_fresh(now)?;
-        if approval.key.nonce != pending_nonce {
+        if approval.key.kind == SigningKind::Transaction && approval.key.nonce != pending_nonce {
             return Err(ApprovalError::StaleNonce);
         }
         Ok(ApprovedDigest {
@@ -164,6 +176,7 @@ mod tests {
 
     fn key(nonce: u64) -> SigningRequestKey {
         SigningRequestKey {
+            kind: SigningKind::Transaction,
             chain_id: 84532,
             from: Address::repeat_byte(0xaa),
             nonce,
