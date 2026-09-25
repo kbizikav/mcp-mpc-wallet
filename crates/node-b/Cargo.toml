@@ -1,0 +1,32 @@
+[package]
+name = "mw-node-b"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# テスト専用: パスキー検証なしで方針を登録できるようにする
+test-util = []
+
+[dependencies]
+alloy-consensus.workspace = true
+alloy-primitives = { workspace = true, features = ["k256"] }
+mw-audit.workspace = true
+mw-chain.workspace = true
+mw-core.workspace = true
+mw-judge.workspace = true
+mw-mpc.workspace = true
+mw-simulator.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+mw-node-b = { path = ".", features = ["test-util"] }
+mw-mpc = { workspace = true, features = ["insecure-test-signer"] }
+
+[lints]
+workspace = true

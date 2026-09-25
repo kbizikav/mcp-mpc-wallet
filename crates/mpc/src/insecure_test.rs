@@ -13,7 +13,15 @@ pub struct InsecureSingleKeySigner {
 
 impl InsecureSingleKeySigner {
     pub fn random() -> Self {
-        let key = SigningKey::random(&mut rand_core::OsRng);
+        Self::from_key(SigningKey::random(&mut rand_core::OsRng))
+    }
+
+    /// 決まった鍵から作る(テストでアドレスを事前に知りたいとき用)。
+    pub fn from_secret_bytes(bytes: &[u8; 32]) -> Self {
+        Self::from_key(SigningKey::from_slice(bytes).expect("valid secp256k1 scalar"))
+    }
+
+    fn from_key(key: SigningKey) -> Self {
         let address = Address::from_public_key(key.verifying_key());
         Self { key, address }
     }

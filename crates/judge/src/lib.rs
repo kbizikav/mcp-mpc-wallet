@@ -1,7 +1,13 @@
 //! AI 判定の LLM 呼び出しの抽象化。本実装は OpenAI(M3)。
 //!
 //! プロンプトは「固定の指示」と「データ領域」に分ける。攻撃者が制御しうる文字列は
-//! データ領域にだけ入れる(不変条件 8)。組み立てと出力のパースは M2 で実装する。
+//! データ領域にだけ入れる(不変条件 8)。
+
+mod judge;
+mod prompt;
+
+pub use judge::{JudgeOutcome, LlmJudgement, SampleResult, judge, parse_judgement};
+pub use prompt::{INSTRUCTIONS, build_request, escape_data};
 
 use std::future::Future;
 use std::sync::Mutex;
