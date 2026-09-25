@@ -166,6 +166,87 @@ pub fn client_config(
     Ok(Arc::new(config))
 }
 
+/// B(enclave)用: TLS 証明書をこの場で作る。鍵はメモリの外に出ない。
+///
+/// クライアント(A)の証明書は、これまでどおりデプロイ CA で検証する。
+/// A は B の証明書を CA ではなく attestation で信頼する(user_data に証明書の hash が入る)。
+pub fn server_config_with_ephemeral_cert(
+    ca_pem: &str,
+) -> Result<(Arc<ServerConfig>, Vec<u8>), TlsError> {
+    let key = KeyPair::generate()?;
+    let mut params = CertificateParams::new(vec![SERVER_NAME.to_owned()])?;
+    params
+        .distinguished_name
+        .push(DnType::CommonName, SERVER_NAME);
+    let cert = params.self_signed(&key)?;
+    let cert_der = cert.der().to_vec();
+    // サーバ証明書はデプロイ CA に繋がっていなくてよい(A は attestation で信頼する)
+    let config = server_config(ca_pem, &cert.pem(), &key.serialize_pem())?;
+    Ok((config, cert_der))
+}
+
+/// A 用: B の証明書の信頼は attestation に任せる(接続後に必ず検証すること)。
+///
+/// 証明書そのものは受け入れるが、TLS 1.3 のハンドシェイク署名は通常どおり検証するので、
+/// 相手がその証明書の秘密鍵を持っていることは保証される。
+pub fn client_config_for_attested_server(
+    cert_pem: &str,
+    key_pem: &str,
+) -> Result<Arc<ClientConfig>, TlsError> {
+    let (certs, key) = identity(cert_pem, key_pem)?;
+    let config = ClientConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|e| TlsError::Config(e.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AttestedServerVerifier {
+            algorithms: provider().signature_verification_algorithms,
+        }))
+        .with_client_auth_cert(certs, key)
+        .map_err(|e| TlsError::Config(e.to_string()))?;
+    Ok(Arc::new(config))
+}
+
+#[derive(Debug)]
+struct AttestedServerVerifier {
+    algorithms: rustls::crypto::WebPkiSupportedAlgorithms,
+}
+
+impl rustls::client::danger::ServerCertVerifier for AttestedServerVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        // 信頼は接続後の attestation の検証で決める
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Err(rustls::Error::General("TLS 1.2 is not allowed".into()))
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.algorithms.supported_schemes()
+    }
+}
+
 pub fn server_name() -> ServerName<'static> {
     ServerName::try_from(SERVER_NAME).expect("valid DNS name")
 }
@@ -252,6 +333,38 @@ mod tests {
         let client =
             client_config(&ours.ca_pem, &ours.node_a_cert_pem, &ours.node_a_key_pem).unwrap();
         assert!(!handshake(impostor, client).await);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn attested_mode_connects_and_exposes_the_certificate() {
+        let pki = generate_pki().unwrap();
+        let (server, cert_der) = server_config_with_ephemeral_cert(&pki.ca_pem).unwrap();
+        let client =
+            client_config_for_attested_server(&pki.node_a_cert_pem, &pki.node_a_key_pem).unwrap();
+        let (c, s) = tokio::io::duplex(64 * 1024);
+        let accept = async move { TlsAcceptor::from(server).accept(s).await.ok() };
+        let connect = async move {
+            TlsConnector::from(client)
+                .connect(server_name(), c)
+                .await
+                .ok()
+        };
+        let (server_side, client_side) = tokio::join!(accept, connect);
+        assert!(server_side.is_some());
+        let client_side = client_side.unwrap();
+        let peer = client_side.get_ref().1.peer_certificates().unwrap();
+        assert_eq!(peer[0].as_ref(), cert_der.as_slice());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn attested_server_still_requires_a_deployment_client_cert() {
+        let ours = generate_pki().unwrap();
+        let theirs = generate_pki().unwrap();
+        let (server, _) = server_config_with_ephemeral_cert(&ours.ca_pem).unwrap();
+        let client =
+            client_config_for_attested_server(&theirs.node_a_cert_pem, &theirs.node_a_key_pem)
+                .unwrap();
+        assert!(!handshake(server, client).await);
     }
 
     #[test]

@@ -31,6 +31,8 @@ alloy-sol-types = "1.7"
 aes-gcm = "0.10"
 age = "0.12"
 anyhow = "1"
+attestation-doc-validation = "0.10"
+aws-nitro-enclaves-nsm-api = "0.5"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 cggmp21 = { version = "0.6.3", features = ["curve-secp256k1"] }

@@ -21,6 +21,7 @@ mw-core.workspace = true
 mw-node-a.workspace = true
 mw-node-b.workspace = true
 mw-policy = { workspace = true, features = ["software-passkey"] }
+mw-tee = { workspace = true, features = ["attest-verify"] }
 mw-wire.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "rt-multi-thread"] }

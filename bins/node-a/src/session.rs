@@ -10,6 +10,7 @@ use mw_mpc::protocol::{
     signers_with_b,
 };
 use mw_policy::{SignedUserOperation, UserRequest, UserResponse};
+use mw_tee::verify::{ExpectedPcrs, verify_nitro_attestation};
 use mw_wire::{AtoB, BtoA, Connection, WireError};
 use rand_core::{OsRng, RngCore};
 use rustls::ClientConfig;
@@ -19,6 +20,14 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 
 pub type BConnection<S> = Connection<S, AtoB, BtoA>;
+
+/// B への接続先。`expected` があれば、B が期待する enclave であることを attestation で確かめる。
+#[derive(Clone)]
+pub struct BEndpoint {
+    pub addr: String,
+    pub tls: Arc<ClientConfig>,
+    pub expected: Option<ExpectedPcrs>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -34,20 +43,59 @@ pub enum SessionError {
     Unexpected(String),
     #[error("parties disagree on the wallet address")]
     AddressMismatch,
+    #[error("B failed attestation: {0}")]
+    Attestation(String),
 }
 
+/// B に接続する。enclave の B なら、他の要求を送る前に attestation を検証する。
 pub async fn connect(
-    node_b: &str,
-    tls: Arc<ClientConfig>,
+    endpoint: &BEndpoint,
 ) -> Result<BConnection<TlsStream<TcpStream>>, SessionError> {
-    let tcp = TcpStream::connect(node_b)
+    let tcp = TcpStream::connect(&endpoint.addr)
         .await
         .map_err(SessionError::Connect)?;
-    let stream = TlsConnector::from(tls)
+    let stream = TlsConnector::from(endpoint.tls.clone())
         .connect(mw_wire::tls::server_name(), tcp)
         .await
         .map_err(SessionError::Connect)?;
-    Ok(Connection::new(stream))
+    let cert_hash: Option<[u8; 32]> = stream
+        .get_ref()
+        .1
+        .peer_certificates()
+        .and_then(|certs| certs.first())
+        .map(|cert| <sha2::Sha256 as sha2::Digest>::digest(cert.as_ref()).into());
+    let mut conn = Connection::new(stream);
+    if let Some(expected) = &endpoint.expected {
+        let cert_hash =
+            cert_hash.ok_or_else(|| SessionError::Attestation("no server certificate".into()))?;
+        attest(&mut conn, expected, &cert_hash).await?;
+    }
+    Ok(conn)
+}
+
+/// B に新しい nonce で attestation を求め、この TLS 接続の証明書に結びついているかを確かめる。
+async fn attest<S>(
+    conn: &mut BConnection<S>,
+    expected: &ExpectedPcrs,
+    cert_hash: &[u8; 32],
+) -> Result<(), SessionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut nonce = [0u8; 32];
+    OsRng.fill_bytes(&mut nonce);
+    conn.send(&AtoB::Attest {
+        nonce: B256::from(nonce),
+    })
+    .await?;
+    match conn.recv().await? {
+        BtoA::Attestation { document } => {
+            verify_nitro_attestation(&document, expected, &nonce, cert_hash)
+                .map_err(|e| SessionError::Attestation(e.to_string()))
+        }
+        BtoA::Error { message } => Err(SessionError::Attestation(message)),
+        other => Err(SessionError::Unexpected(format!("{other:?}"))),
+    }
 }
 
 pub struct KeygenOutput {

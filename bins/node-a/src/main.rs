@@ -18,10 +18,12 @@ use mw_chain::JsonRpcClient;
 use mw_core::{AgentOutcome, Proposal, UntrustedText};
 use mw_mpc::protocol::address_of;
 use mw_node_a::mcp::{ProposeParams, WalletConfig, WalletServer};
+use mw_node_a::session::BEndpoint;
 use mw_node_a::session::{connect, keygen, propose, resume};
 use mw_node_a::shares::{load_share_a, save_share_a, save_share_c};
 use mw_node_a::txbuild::{TxParams, build, encode_unsigned};
-use mw_wire::tls::{client_config, read_pem};
+use mw_tee::verify::ExpectedPcrs;
+use mw_wire::tls::{client_config, client_config_for_attested_server, read_pem};
 use rmcp::ServiceExt;
 use secrecy::SecretString;
 
@@ -44,6 +46,9 @@ struct Conn {
     tls_dir: PathBuf,
     #[arg(long)]
     data_dir: PathBuf,
+    /// B が Nitro Enclave で動くとき、期待するイメージの PCR0(16 進)。指定すると attestation を検証する
+    #[arg(long)]
+    expected_pcr0: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -95,12 +100,25 @@ enum Command {
     },
 }
 
-fn tls(tls_dir: &Path) -> anyhow::Result<Arc<rustls::ClientConfig>> {
-    Ok(client_config(
-        &read_pem(&tls_dir.join("ca.pem"))?,
-        &read_pem(&tls_dir.join("node-a.pem"))?,
-        &read_pem(&tls_dir.join("node-a.key"))?,
-    )?)
+/// B への接続先。PCR0 が指定されていれば、B の証明書は attestation で信頼する。
+fn endpoint(conn: &Conn) -> anyhow::Result<BEndpoint> {
+    let cert = read_pem(&conn.tls_dir.join("node-a.pem"))?;
+    let key = read_pem(&conn.tls_dir.join("node-a.key"))?;
+    let (tls, expected): (Arc<rustls::ClientConfig>, _) = match &conn.expected_pcr0 {
+        Some(pcr0) => (
+            client_config_for_attested_server(&cert, &key)?,
+            Some(ExpectedPcrs::pcr0(pcr0)?),
+        ),
+        None => (
+            client_config(&read_pem(&conn.tls_dir.join("ca.pem"))?, &cert, &key)?,
+            None,
+        ),
+    };
+    Ok(BEndpoint {
+        addr: conn.node_b.clone(),
+        tls,
+        expected,
+    })
 }
 
 async fn rpc() -> anyhow::Result<JsonRpcClient> {
@@ -114,8 +132,7 @@ async fn wallet_config(conn: &Conn) -> anyhow::Result<WalletConfig> {
     let address = address_of(&share_a.shared_public_key);
     Ok(WalletConfig {
         chain_id: CHAIN_ID,
-        node_b: conn.node_b.clone(),
-        tls: tls(&conn.tls_dir)?,
+        node_b: endpoint(conn)?,
         share_a,
         address,
         rpc: rpc().await?,
@@ -147,7 +164,7 @@ async fn run_keygen(conn: &Conn, passphrase_file: Option<&Path>) -> anyhow::Resu
         bail!("share A already exists in {}", conn.data_dir.display());
     }
     eprintln!("generating primes and running keygen with B (this takes a while)...");
-    let mut b = connect(&conn.node_b, tls(&conn.tls_dir)?).await?;
+    let mut b = connect(&endpoint(conn)?).await?;
     let out = keygen(&mut b).await?;
     save_share_a(&conn.data_dir, &out.share_a)?;
     save_share_c(&conn.data_dir, &out.share_c, &passphrase)?;
@@ -176,7 +193,7 @@ async fn run_propose(conn: &Conn, params: ProposeParams, wait: bool) -> anyhow::
         unsigned_tx: encode_unsigned(&tx),
         agent_note: UntrustedText::new(params.note),
     };
-    let mut b = connect(&config.node_b, config.tls.clone()).await?;
+    let mut b = connect(&config.node_b).await?;
     let outcome = propose(&mut b, &config.share_a, proposal).await?;
     let _ = b.close().await;
     report(&config, outcome, wait).await
@@ -188,7 +205,7 @@ async fn run_resume(
     wait: bool,
 ) -> anyhow::Result<()> {
     let config = wallet_config(conn).await?;
-    let mut b = connect(&config.node_b, config.tls.clone()).await?;
+    let mut b = connect(&config.node_b).await?;
     let outcome = resume(&mut b, &config.share_a, config.address, request_id).await?;
     let _ = b.close().await;
     report(&config, outcome, wait).await

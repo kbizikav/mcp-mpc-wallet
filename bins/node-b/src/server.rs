@@ -10,6 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use mw_mpc::protocol::{PARTY_A, PARTY_C};
 
+use crate::AttestationService;
 use crate::signer::{AConnection, CggmpSigner, PeerSession};
 
 /// 1 本の接続で届く要求を順に処理する。署名済み tx は返さず、結果だけを返す。
@@ -18,6 +19,7 @@ use crate::signer::{AConnection, CggmpSigner, PeerSession};
 pub async fn serve_connection<C, Sim, L, N, K, A, S>(
     node: &JudgeNode<C, Sim, L, CggmpSigner<S>, N, K, A>,
     conn: AConnection<S>,
+    attestation: Option<&AttestationService>,
     after_request: impl Fn(),
 ) -> Result<(), WireError>
 where
@@ -41,6 +43,15 @@ where
                 let outcome = node.handle_proposal(proposal, &mut session).await;
                 after_request();
                 session.conn.send(&BtoA::Outcome { outcome }).await?;
+            }
+            AtoB::Attest { nonce } => {
+                let reply = match attestation {
+                    Some(service) => service.respond(&nonce),
+                    None => BtoA::Error {
+                        message: "this node does not run in an enclave".into(),
+                    },
+                };
+                session.conn.send(&reply).await?;
             }
             AtoB::ProposeTypedData { proposal } => {
                 let outcome = node.handle_typed_data(proposal, &mut session).await;
@@ -88,6 +99,7 @@ fn kind(msg: &AtoB) -> &'static str {
     match msg {
         AtoB::Propose { .. } => "propose",
         AtoB::Resume { .. } => "resume",
+        AtoB::Attest { .. } => "attest",
         AtoB::ProposeTypedData { .. } => "propose_typed_data",
         AtoB::User { .. } => "user",
         AtoB::Recover { .. } => "recover",

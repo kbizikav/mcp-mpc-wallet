@@ -16,6 +16,12 @@ pub mod mock;
 #[cfg(feature = "nitro")]
 pub mod kms;
 
+#[cfg(all(feature = "nitro", target_os = "linux"))]
+pub mod nsm;
+
+#[cfg(feature = "attest-verify")]
+pub mod verify;
+
 #[derive(Debug, thiserror::Error)]
 pub enum TeeError {
     #[error("sealed secret not found: {0}")]
@@ -56,8 +62,11 @@ pub struct VerifiedAttestation {
 }
 
 /// エンクレーブ内で自分の attestation document を発行する。
+///
+/// `user_data` には TLS 証明書の hash など、document に結びつけたい値を入れる。
+/// `nonce` は検証する側が決めた値で、使い回しを防ぐ。
 pub trait Attestor: Send + Sync {
-    fn attest(&self, user_data: &[u8]) -> Result<AttestationDocument, TeeError>;
+    fn attest(&self, user_data: &[u8], nonce: &[u8]) -> Result<AttestationDocument, TeeError>;
 }
 
 /// ユーザーアプリや A が B の attestation を検証する。

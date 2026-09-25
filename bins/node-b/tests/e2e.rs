@@ -91,7 +91,7 @@ async fn keygen_over_tls() -> (KeyShare, KeyShare, KeyShare) {
 
     let b_side = async move {
         let tls = TlsAcceptor::from(server).accept(b_io).await.unwrap();
-        run_keygen(&mut Connection::new(tls)).await.unwrap()
+        run_keygen(&mut Connection::new(tls), None).await.unwrap()
     };
     let a_side = async move {
         let tls = TlsConnector::from(client)
@@ -201,7 +201,7 @@ async fn run_proposal(node: &Node, share_a: &KeyShare, p: Proposal) -> (AgentOut
         inner: a_io,
         seen: seen.clone(),
     };
-    let b_side = serve_connection(node, Connection::new(b_io), || {});
+    let b_side = serve_connection(node, Connection::new(b_io), None, || {});
     let a_side = async {
         let mut conn: BConnection<Tap> = Connection::new(tap);
         let outcome = propose(&mut conn, share_a, p).await.unwrap();
@@ -325,7 +325,7 @@ async fn with_b<T>(
     session: impl AsyncFnOnce(&mut BConnection<DuplexStream>) -> T,
 ) -> T {
     let (a_io, b_io) = tokio::io::duplex(1 << 20);
-    let b_side = serve_connection(node, Connection::new(b_io), || {});
+    let b_side = serve_connection(node, Connection::new(b_io), None, || {});
     let a_side = async {
         let mut conn: BConnection<DuplexStream> = Connection::new(a_io);
         let out = session(&mut conn).await;

@@ -10,10 +10,14 @@ publish.workspace = true
 # 開発用のモック(TEE なし)。本番ビルドで有効にしてはいけない
 insecure-mock = []
 # Nitro Enclave の中で KMS(attestation つき)で封印する
-nitro = ["dep:aes-gcm", "dep:base64", "dep:rand_core"]
+nitro = ["dep:aes-gcm", "dep:base64", "dep:rand_core", "dep:aws-nitro-enclaves-nsm-api"]
+# Nitro Enclave の attestation document を検証する(A 側)
+attest-verify = ["dep:attestation-doc-validation", "dep:base64", "dep:hex"]
 
 [dependencies]
 aes-gcm = { workspace = true, optional = true }
+attestation-doc-validation = { workspace = true, optional = true }
+hex = { version = "0.4", optional = true }
 base64 = { workspace = true, optional = true }
 rand_core = { workspace = true, optional = true }
 secrecy.workspace = true
@@ -22,8 +26,12 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+aws-nitro-enclaves-nsm-api = { workspace = true, optional = true }
+serde_bytes = "0.11"
+
 [dev-dependencies]
-mw-tee = { path = ".", features = ["insecure-mock", "nitro"] }
+mw-tee = { path = ".", features = ["insecure-mock", "nitro", "attest-verify"] }
 
 [lints]
 workspace = true

@@ -43,7 +43,8 @@ set +e
     --tls-dir /data/tls \
     --data-dir /data \
     --kms-key-id "$MW_KMS_KEY_ID" \
-    --kms-region "$AWS_REGION" 2>&1 | log
+    --kms-region "$AWS_REGION" \
+    --enclave-tls 2>&1 | log
 status=$?
 sync_data
 echo "mw-node-b exited with $status" | log

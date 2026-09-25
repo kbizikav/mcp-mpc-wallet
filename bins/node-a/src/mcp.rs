@@ -11,16 +11,14 @@ use mw_core::{Proposal, TypedDataProposal, UntrustedText};
 use mw_mpc::protocol::KeyShare;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{schemars, tool, tool_router};
-use rustls::ClientConfig;
 use serde::Deserialize;
 
-use crate::session::{connect, propose, propose_typed_data, resume};
+use crate::session::{BEndpoint, connect, propose, propose_typed_data, resume};
 use crate::txbuild::{TxParams, build, encode_unsigned};
 
 pub struct WalletConfig {
     pub chain_id: u64,
-    pub node_b: String,
-    pub tls: Arc<ClientConfig>,
+    pub node_b: BEndpoint,
     pub share_a: KeyShare,
     pub address: Address,
     pub rpc: JsonRpcClient,
@@ -129,7 +127,7 @@ impl WalletServer {
             unsigned_tx: encode_unsigned(&tx),
             agent_note: UntrustedText::new(params.note),
         };
-        let mut conn = connect(&c.node_b, c.tls.clone())
+        let mut conn = connect(&c.node_b)
             .await
             .map_err(|e| format!("judge node unavailable: {e}"))?;
         let outcome = propose(&mut conn, &c.share_a, proposal)
@@ -163,7 +161,7 @@ impl WalletServer {
             typed_data,
             agent_note: UntrustedText::new(params.note),
         };
-        let mut conn = connect(&c.node_b, c.tls.clone())
+        let mut conn = connect(&c.node_b)
             .await
             .map_err(|e| format!("judge node unavailable: {e}"))?;
         let outcome = propose_typed_data(&mut conn, &c.share_a, proposal)
@@ -188,7 +186,7 @@ impl WalletServer {
             .request_id
             .parse()
             .map_err(|e| format!("invalid `request_id`: {e}"))?;
-        let mut conn = connect(&c.node_b, c.tls.clone())
+        let mut conn = connect(&c.node_b)
             .await
             .map_err(|e| format!("judge node unavailable: {e}"))?;
         let outcome = resume(&mut conn, &c.share_a, c.address, request_id)

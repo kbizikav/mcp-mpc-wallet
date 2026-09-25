@@ -30,6 +30,10 @@ pub enum AtoB {
         signed: SignedUserOperation,
         unsigned_tx: Bytes,
     },
+    /// B(enclave)に attestation document を求める。TLS 接続の直後に送る
+    Attest {
+        nonce: B256,
+    },
     /// B のシェアがまだないときだけ受け付ける鍵生成
     Keygen {
         session: B256,
@@ -61,6 +65,10 @@ pub enum BtoA {
         signing_hash: B256,
     },
     KeygenAccepted,
+    /// user_data に B の TLS 証明書の SHA-256 を入れた attestation document
+    Attestation {
+        document: Bytes,
+    },
     KeygenDone {
         address: Address,
     },

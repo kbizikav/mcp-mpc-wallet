@@ -28,13 +28,13 @@ use mw_node_b_server::keygen::run_keygen;
 use mw_node_b_server::net::{Listen, RawListener, RawStream};
 use mw_node_b_server::notifier::JsonlNotifier;
 use mw_node_b_server::server::serve_connection;
-use mw_node_b_server::{CggmpSigner, SHARE_LABEL};
+use mw_node_b_server::{AttestationService, CggmpSigner, SHARE_LABEL};
 use mw_simulator::{TenderlyConfig, TenderlySimulator};
 use mw_tee::SealedStorage;
 use mw_tee::kms::{KmsCredentials, KmsToolSealedStorage};
 use mw_tee::mock::InsecureFileStorage;
 use mw_wire::Connection;
-use mw_wire::tls::{read_pem, server_config};
+use mw_wire::tls::{read_pem, server_config, server_config_with_ephemeral_cert};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
@@ -69,6 +69,9 @@ enum Command {
         data_dir: PathBuf,
         #[command(flatten)]
         seal: SealArgs,
+        /// TLS 証明書を enclave の中で作り、attestation で証明する(Nitro Enclave 用)
+        #[arg(long)]
+        enclave_tls: bool,
     },
     /// ユーザーのパスキーを登録する(初回だけ。B を止めた状態で実行する)
     RegisterPasskey {
@@ -94,6 +97,9 @@ enum Command {
         passkey_origin: String,
         #[command(flatten)]
         seal: SealArgs,
+        /// TLS 証明書を enclave の中で作り、attestation で証明する(Nitro Enclave 用)
+        #[arg(long)]
+        enclave_tls: bool,
     },
 }
 
@@ -121,6 +127,36 @@ struct SealArgs {
     /// 親インスタンスで KMS への vsock-proxy が待つポート
     #[arg(long, default_value_t = 8000)]
     kms_proxy_port: u16,
+}
+
+/// TLS の設定と、enclave なら attestation の発行元。
+fn tls_setup(
+    tls_dir: &Path,
+    enclave_tls: bool,
+) -> anyhow::Result<(TlsAcceptor, Option<Arc<AttestationService>>)> {
+    if !enclave_tls {
+        return Ok((acceptor(tls_dir)?, None));
+    }
+    let (config, cert_der) =
+        server_config_with_ephemeral_cert(&read_pem(&tls_dir.join("ca.pem"))?)?;
+    let cert_hash: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&cert_der).into();
+    Ok((
+        TlsAcceptor::from(config),
+        Some(Arc::new(AttestationService {
+            attestor: nsm_attestor()?,
+            cert_hash,
+        })),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn nsm_attestor() -> anyhow::Result<Box<dyn mw_tee::Attestor>> {
+    Ok(Box::new(mw_tee::nsm::NsmAttestor))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn nsm_attestor() -> anyhow::Result<Box<dyn mw_tee::Attestor>> {
+    bail!("--enclave-tls needs a Nitro Enclave (Linux)")
 }
 
 fn storage(data_dir: &Path, seal: &SealArgs) -> anyhow::Result<Box<dyn SealedStorage>> {
@@ -154,19 +190,20 @@ async fn keygen(
     tls_dir: &Path,
     data_dir: &Path,
     seal: &SealArgs,
+    enclave_tls: bool,
 ) -> anyhow::Result<()> {
     let storage = storage(data_dir, seal)?;
     if storage.exists(SHARE_LABEL) {
         bail!("B already has a key share; refusing to run keygen again");
     }
-    let acceptor = acceptor(tls_dir)?;
+    let (acceptor, attestation) = tls_setup(tls_dir, enclave_tls)?;
     let listener = RawListener::bind(&listen).await?;
     eprintln!("waiting for A on {listen} to run keygen");
     let (tcp, peer) = listener.accept().await?;
     eprintln!("keygen with {peer}");
     let tls = acceptor.accept(tcp).await?;
     let mut conn = Connection::new(tls);
-    let share = run_keygen(&mut conn).await?;
+    let share = run_keygen(&mut conn, attestation.as_deref()).await?;
     let bytes = serde_json::to_vec(&share)?;
     storage.seal(SHARE_LABEL, &SecretSlice::from(bytes))?;
     let signer = CggmpSigner::<Stream>::new(share)?;
@@ -221,6 +258,7 @@ async fn serve(
     passkey_rp_id: String,
     passkey_origin: String,
     seal: &SealArgs,
+    enclave_tls: bool,
 ) -> anyhow::Result<()> {
     let signer = CggmpSigner::<Stream>::new(load_share(&*storage(data_dir, seal)?)?)?;
     let wallet = signer.address();
@@ -261,7 +299,7 @@ async fn serve(
 
     node.restore(&load_user_state(data_dir)?)?;
 
-    let acceptor = acceptor(tls_dir)?;
+    let (acceptor, attestation) = tls_setup(tls_dir, enclave_tls)?;
     let listener = RawListener::bind(&listen).await?;
     eprintln!("judge node for wallet {wallet} on chain {CHAIN_ID}, listening on {listen}");
     loop {
@@ -269,6 +307,7 @@ async fn serve(
         let acceptor = acceptor.clone();
         let node = node.clone();
         let data_dir = data_dir.to_path_buf();
+        let attestation = attestation.clone();
         tokio::spawn(async move {
             let tls = match acceptor.accept(tcp).await {
                 Ok(tls) => tls,
@@ -282,7 +321,9 @@ async fn serve(
                     eprintln!("failed to save user state: {e}");
                 }
             };
-            if let Err(e) = serve_connection(&node, Connection::new(tls), save).await {
+            if let Err(e) =
+                serve_connection(&node, Connection::new(tls), attestation.as_deref(), save).await
+            {
                 eprintln!("connection with {peer}: {e}");
             }
         });
@@ -309,7 +350,8 @@ async fn main() -> anyhow::Result<()> {
             tls_dir,
             data_dir,
             seal,
-        } => keygen(listen, &tls_dir, &data_dir, &seal).await,
+            enclave_tls,
+        } => keygen(listen, &tls_dir, &data_dir, &seal, enclave_tls).await,
         Command::RegisterPasskey {
             data_dir,
             passkey,
@@ -322,6 +364,7 @@ async fn main() -> anyhow::Result<()> {
             passkey_rp_id,
             passkey_origin,
             seal,
+            enclave_tls,
         } => {
             serve(
                 listen,
@@ -330,6 +373,7 @@ async fn main() -> anyhow::Result<()> {
                 passkey_rp_id,
                 passkey_origin,
                 &seal,
+                enclave_tls,
             )
             .await
         }

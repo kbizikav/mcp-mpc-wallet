@@ -31,13 +31,14 @@ use mw_chain::{ChainClient, JsonRpcClient, encode_signed};
 use mw_core::AgentOutcome;
 use mw_core::Policy;
 use mw_mpc::protocol::{address_of, sign_with_local_shares};
-use mw_node_a::session::{connect, recover, user_request};
+use mw_node_a::session::{BEndpoint, connect, recover, user_request};
 use mw_node_a::shares::{load_share_a, load_share_c};
 use mw_node_a::txbuild::{build_sweep, encode_unsigned};
 use mw_node_b::{DEFAULT_ORIGIN, DEFAULT_RP_ID};
 use mw_policy::software::SoftwarePasskey;
 use mw_policy::{UserOperation, UserRequest, UserResponse};
-use mw_wire::tls::{client_config, read_pem};
+use mw_tee::verify::ExpectedPcrs;
+use mw_wire::tls::{client_config, client_config_for_attested_server, read_pem};
 use secrecy::SecretString;
 
 #[derive(Parser)]
@@ -56,6 +57,28 @@ struct Target {
     tls_dir: PathBuf,
     #[arg(long)]
     wallet: Address,
+    /// B が Nitro Enclave で動くとき、期待するイメージの PCR0(16 進)
+    #[arg(long)]
+    expected_pcr0: Option<String>,
+}
+
+impl Target {
+    fn endpoint(&self) -> anyhow::Result<BEndpoint> {
+        let cert = read_pem(&self.tls_dir.join("node-a.pem"))?;
+        let key = read_pem(&self.tls_dir.join("node-a.key"))?;
+        Ok(match &self.expected_pcr0 {
+            Some(pcr0) => BEndpoint {
+                addr: self.node_b.clone(),
+                tls: client_config_for_attested_server(&cert, &key)?,
+                expected: Some(ExpectedPcrs::pcr0(pcr0)?),
+            },
+            None => BEndpoint {
+                addr: self.node_b.clone(),
+                tls: client_config(&read_pem(&self.tls_dir.join("ca.pem"))?, &cert, &key)?,
+                expected: None,
+            },
+        })
+    }
 }
 
 #[derive(Subcommand)]
@@ -200,12 +223,7 @@ fn save_passkey(path: &Path, passkey: &SoftwarePasskey) -> anyhow::Result<()> {
 }
 
 async fn send(target: &Target, request: UserRequest) -> anyhow::Result<UserResponse> {
-    let tls = client_config(
-        &read_pem(&target.tls_dir.join("ca.pem"))?,
-        &read_pem(&target.tls_dir.join("node-a.pem"))?,
-        &read_pem(&target.tls_dir.join("node-a.key"))?,
-    )?;
-    let mut conn = connect(&target.node_b, tls).await?;
+    let mut conn = connect(&target.endpoint()?).await?;
     let response = user_request(&mut conn, request).await?;
     let _ = conn.close().await;
     Ok(response)
@@ -368,12 +386,7 @@ async fn main() -> anyhow::Result<()> {
                 signing_hash: alloy_primitives::keccak256(&unsigned),
             });
             save_passkey(&passkey, &key)?;
-            let tls = client_config(
-                &read_pem(&target.tls_dir.join("ca.pem"))?,
-                &read_pem(&target.tls_dir.join("node-a.pem"))?,
-                &read_pem(&target.tls_dir.join("node-a.key"))?,
-            )?;
-            let mut conn = connect(&target.node_b, tls).await?;
+            let mut conn = connect(&target.endpoint()?).await?;
             let outcome = recover(&mut conn, &share_c, signed, unsigned).await?;
             println!("{}", serde_json::to_string(&outcome)?);
             if !matches!(outcome, AgentOutcome::Submitted { .. }) {

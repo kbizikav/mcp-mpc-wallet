@@ -113,7 +113,7 @@ pub struct InsecureMockAttestor {
 }
 
 impl Attestor for InsecureMockAttestor {
-    fn attest(&self, user_data: &[u8]) -> Result<AttestationDocument, TeeError> {
+    fn attest(&self, user_data: &[u8], _nonce: &[u8]) -> Result<AttestationDocument, TeeError> {
         let document = MockDocument {
             pcrs: self.pcrs.clone(),
             user_data: user_data.to_vec(),
@@ -248,7 +248,7 @@ mod tests {
         let attestor = InsecureMockAttestor {
             pcrs: vec![vec![0xaa; 48]],
         };
-        let document = attestor.attest(b"tls-key-hash").unwrap();
+        let document = attestor.attest(b"tls-key-hash", b"nonce").unwrap();
 
         let ok = InsecureMockVerifier
             .verify(

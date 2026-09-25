@@ -11,6 +11,7 @@ use mw_wire::{AtoB, BtoA, WireError};
 use rand_core::OsRng;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::AttestationService;
 use crate::signer::AConnection;
 
 #[derive(Debug, thiserror::Error)]
@@ -28,13 +29,28 @@ pub enum KeygenError {
     },
 }
 
-pub async fn run_keygen<S>(conn: &mut AConnection<S>) -> Result<KeyShare, KeygenError>
+pub async fn run_keygen<S>(
+    conn: &mut AConnection<S>,
+    attestation: Option<&AttestationService>,
+) -> Result<KeyShare, KeygenError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let session = match conn.recv().await? {
-        AtoB::Keygen { session } => session,
-        other => return Err(KeygenError::Unexpected(format!("{other:?}"))),
+    // A は鍵生成の前に attestation を確かめる(偽の B とシェアを作らないため)
+    let session = loop {
+        match conn.recv().await? {
+            AtoB::Keygen { session } => break session,
+            AtoB::Attest { nonce } => {
+                let reply = match attestation {
+                    Some(service) => service.respond(&nonce),
+                    None => BtoA::Error {
+                        message: "this node does not run in an enclave".into(),
+                    },
+                };
+                conn.send(&reply).await?;
+            }
+            other => return Err(KeygenError::Unexpected(format!("{other:?}"))),
+        }
     };
 
     // 素数の生成は重いので、プロトコルを始める前に済ませておく
