@@ -74,7 +74,7 @@ sequenceDiagram
         Agent->>A: resume_transaction (within 5 min)
         A->>B: resume → A + B sign, B sends
     else anything else
-        B-->>Agent: rejected · policy_violation (via A; details go to the owner only)
+        B-->>Agent: rejected · policy_violation (via A, details go to the owner only)
     end
 ```
 
