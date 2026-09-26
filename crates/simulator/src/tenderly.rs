@@ -29,6 +29,9 @@ pub struct TenderlyConfig {
     pub access_key: SecretString,
     pub base_url: String,
     pub timeout: Duration,
+    /// Native balances assumed during simulation. Dry runs only: a judge node in production must
+    /// simulate against the real chain state, so it never sets this
+    pub dry_run_balances: Vec<(Address, U256)>,
 }
 
 impl TenderlyConfig {
@@ -39,7 +42,14 @@ impl TenderlyConfig {
             access_key,
             base_url: DEFAULT_BASE_URL.into(),
             timeout: Duration::from_secs(20),
+            dry_run_balances: Vec::new(),
         }
+    }
+
+    /// Simulate as if `address` held `balance` wei (for dry runs from an unfunded wallet).
+    pub fn with_dry_run_balance(mut self, address: Address, balance: U256) -> Self {
+        self.dry_run_balances.push((address, balance));
+        self
     }
 }
 
@@ -47,6 +57,7 @@ pub struct TenderlySimulator {
     http: reqwest::Client,
     endpoint: String,
     access_key: SecretString,
+    dry_run_balances: Vec<(Address, U256)>,
 }
 
 impl TenderlySimulator {
@@ -61,12 +72,16 @@ impl TenderlySimulator {
                 config.project_slug
             ),
             access_key: config.access_key,
+            dry_run_balances: config.dry_run_balances,
         })
     }
 }
 
-fn request_body(request: &SimulationRequest) -> serde_json::Value {
-    serde_json::json!({
+fn request_body(
+    request: &SimulationRequest,
+    dry_run_balances: &[(Address, U256)],
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
         "network_id": request.chain_id.to_string(),
         "from": request.from,
         "to": request.to,
@@ -78,7 +93,20 @@ fn request_body(request: &SimulationRequest) -> serde_json::Value {
         "simulation_type": "quick",
         "save": false,
         "save_if_fails": false,
-    })
+    });
+    if !dry_run_balances.is_empty() {
+        let state: serde_json::Map<_, _> = dry_run_balances
+            .iter()
+            .map(|(address, balance)| {
+                (
+                    address.to_string(),
+                    serde_json::json!({ "balance": format!("{balance:#x}") }),
+                )
+            })
+            .collect();
+        body["state_objects"] = state.into();
+    }
+    body
 }
 
 impl Simulator for TenderlySimulator {
@@ -90,7 +118,7 @@ impl Simulator for TenderlySimulator {
             .http
             .post(&self.endpoint)
             .header("X-Access-Key", self.access_key.expose_secret())
-            .json(&request_body(request))
+            .json(&request_body(request, &self.dry_run_balances))
             .send()
             .await
             .map_err(|e| SimulationError::Unavailable(describe(e)))?;
@@ -366,21 +394,45 @@ mod tests {
 
     #[test]
     fn request_uses_quick_mode_and_decimal_values() {
-        let body = request_body(&SimulationRequest {
-            chain_id: 84532,
-            from: WALLET.parse().unwrap(),
-            to: None,
-            input: Default::default(),
-            value: U256::from(10u64).pow(U256::from(18)),
-            gas_limit: 21_000,
-            max_fee_per_gas: 7,
-            block_number: Some(5),
-        });
+        let body = request_body(
+            &SimulationRequest {
+                chain_id: 84532,
+                from: WALLET.parse().unwrap(),
+                to: None,
+                input: Default::default(),
+                value: U256::from(10u64).pow(U256::from(18)),
+                gas_limit: 21_000,
+                max_fee_per_gas: 7,
+                block_number: Some(5),
+            },
+            &[],
+        );
         assert_eq!(body["network_id"], "84532");
         assert_eq!(body["value"], "1000000000000000000");
         assert_eq!(body["gas_price"], "7");
         assert_eq!(body["simulation_type"], "quick");
         assert_eq!(body["save"], false);
         assert!(body["to"].is_null());
+        assert!(body.get("state_objects").is_none());
+    }
+
+    #[test]
+    fn dry_run_balances_become_state_overrides() {
+        let wallet: Address = WALLET.parse().unwrap();
+        let request = SimulationRequest {
+            chain_id: 8453,
+            from: wallet,
+            to: None,
+            input: Default::default(),
+            value: U256::ZERO,
+            gas_limit: 21_000,
+            max_fee_per_gas: 0,
+            block_number: None,
+        };
+        let body = request_body(&request, &[(wallet, U256::from(1_000_000u64))]);
+        assert_eq!(
+            body["state_objects"][wallet.to_string()]["balance"],
+            "0xf4240"
+        );
     }
 }

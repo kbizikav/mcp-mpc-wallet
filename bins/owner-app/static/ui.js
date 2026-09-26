@@ -381,6 +381,18 @@ export const POLICY_TEMPLATES = [
       "Everything else must be rejected: larger transfers, token approvals, allowances or permits, and any smart contract call.",
   },
   {
+    // Addresses are for Base Sepolia (Uniswap v3 SwapRouter02 and Circle's test USDC)
+    name: "Budget + Uniswap",
+    text:
+      "Plain ETH transfers of at most 0.0001 ETH per transaction to any address are allowed without asking.\n" +
+      "Plain ETH transfers above 0.0001 ETH and up to 0.0003 ETH need the owner's confirmation.\n" +
+      "Swapping ETH for USDC (0x036CbD53842c5426634e7929541eC2318f3dCF7e) through the Uniswap SwapRouter02 " +
+      "(0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4) is allowed without asking when at most 0.001 ETH leaves the wallet " +
+      "and the wallet itself receives the USDC.\n" +
+      "Everything else must be rejected: larger transfers, other tokens or routers, token approvals, allowances or permits, " +
+      "swaps whose output goes to any other address, and any other smart contract call.",
+  },
+  {
     name: "Tips only",
     text:
       "Plain ETH transfers of at most 0.00005 ETH are allowed without asking.\n" +

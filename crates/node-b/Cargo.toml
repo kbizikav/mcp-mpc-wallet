@@ -26,9 +26,12 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+alloy-sol-types.workspace = true
+mw-http.workspace = true
 mw-node-b = { path = ".", features = ["unverified-policy"] }
 mw-policy = { workspace = true, features = ["software-passkey"] }
 mw-mpc = { workspace = true, features = ["insecure-test-signer"] }
+reqwest.workspace = true
 secrecy.workspace = true
 
 [lints]

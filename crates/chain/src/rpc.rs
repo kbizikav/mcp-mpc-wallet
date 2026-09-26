@@ -157,6 +157,15 @@ impl JsonRpcClient {
         })
     }
 
+    /// `eth_call` against the latest block (for quotes; never used for B's judgment).
+    pub async fn eth_call(&self, to: Address, input: &Bytes) -> Result<Bytes, ChainError> {
+        self.call(
+            "eth_call",
+            serde_json::json!([{ "to": to, "input": input }, "latest"]),
+        )
+        .await
+    }
+
     pub async fn receipt(&self, tx_hash: B256) -> Result<Option<ReceiptInfo>, ChainError> {
         let receipt: Option<Receipt> = self
             .call("eth_getTransactionReceipt", serde_json::json!([tx_hash]))
