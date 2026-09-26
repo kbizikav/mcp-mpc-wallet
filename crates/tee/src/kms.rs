@@ -1,11 +1,11 @@
-//! Nitro Enclave の中での封印: KMS のデータキー(attestation つき)+ AES-256-GCM。
+//! Sealing inside a Nitro Enclave: a KMS data key (with attestation) + AES-256-GCM.
 //!
-//! KMS への要求は AWS 公式の `kmstool_enclave_cli` に任せる。これは enclave の attestation
-//! document を KMS に渡し、KMS はキーポリシー(PCR0 などの条件)を満たす enclave にだけ
-//! データキーを返す。平文のデータキーは enclave の外に出ない。
+//! Requests to KMS go through AWS's official `kmstool_enclave_cli`. It passes the enclave's attestation
+//! document to KMS, and KMS returns the data key only to an enclave that satisfies the key policy (conditions
+//! such as PCR0). The plaintext data key never leaves the enclave.
 //!
-//! 保存するのは「KMS で暗号化したデータキー」と「暗号文」だけなので、親インスタンスや
-//! 運営者はファイルを読んでも中身を得られない。
+//! Only the KMS-encrypted data key and the ciphertext are stored, so the parent instance and
+//! the operator learn nothing by reading the files.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{SealedStorage, TeeError};
 
-/// enclave から KMS に使う一時的な資格情報(親インスタンスのロール)。
+/// Temporary credentials the enclave uses for KMS (the parent instance's role).
 pub struct KmsCredentials {
     pub access_key_id: String,
     pub secret_access_key: SecretString,
@@ -46,7 +46,7 @@ pub struct KmsToolSealedStorage {
     pub tool: PathBuf,
     pub region: String,
     pub key_id: String,
-    /// 親インスタンスで KMS への vsock-proxy が待つポート
+    /// Port of the vsock-proxy to KMS on the parent instance
     pub proxy_port: u16,
     pub credentials: KmsCredentials,
 }
@@ -54,7 +54,7 @@ pub struct KmsToolSealedStorage {
 #[derive(Serialize, Deserialize)]
 struct SealedFile {
     version: u32,
-    /// KMS で暗号化されたデータキー(base64)
+    /// The data key encrypted by KMS (base64)
     kms_ciphertext: String,
     nonce: String,
     ciphertext: String,
@@ -85,7 +85,7 @@ impl KmsToolSealedStorage {
             .output()
             .map_err(|e| TeeError::Storage(format!("running kmstool: {e}")))?;
         if !output.status.success() {
-            // 標準エラーには秘密は出ないが、長さは抑える
+            // stderr holds no secrets, but keep it short
             let err = String::from_utf8_lossy(&output.stderr);
             return Err(TeeError::Storage(format!(
                 "kmstool failed: {}",
@@ -95,7 +95,7 @@ impl KmsToolSealedStorage {
         String::from_utf8(output.stdout).map_err(|e| TeeError::Storage(e.to_string()))
     }
 
-    /// `KEY: base64` 形式の行から値を取り出す。
+    /// Extract the value from a line of the form `KEY: base64`.
     fn field(output: &str, name: &str) -> Result<Vec<u8>, TeeError> {
         let prefix = format!("{name}:");
         let value = output
@@ -207,7 +207,7 @@ impl SealedStorage for KmsToolSealedStorage {
 mod tests {
     use super::*;
 
-    /// kmstool の代わりに、固定のデータキーを返すスクリプトを使う。
+    /// Instead of kmstool, use a script that returns a fixed data key.
     fn fake_tool(dir: &std::path::Path) -> PathBuf {
         let key = STANDARD.encode([7u8; 32]);
         let script = dir.join("fake-kmstool");
@@ -260,7 +260,7 @@ mod tests {
         assert!(!raw.contains("key share"));
         assert_eq!(s.unseal("share-b").unwrap().expose_secret(), b"key share");
 
-        // 暗号文を書き換えると復号できない
+        // Tampering with the ciphertext makes decryption fail
         let mut file: serde_json::Value = serde_json::from_str(&raw).unwrap();
         file["ciphertext"] = serde_json::json!(STANDARD.encode(b"tampered-ciphertext-bytes"));
         std::fs::write(dir.join("share-c.kms.json"), file.to_string()).unwrap();

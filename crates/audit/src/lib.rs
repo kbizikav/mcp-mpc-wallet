@@ -1,7 +1,7 @@
-//! ハッシュチェーン化した監査ログ(不変条件 10)。
+//! Hash-chained audit log (invariant 10).
 //!
-//! 各エントリは直前のエントリのハッシュを含むので、途中の改ざん・削除・並べ替えを検出できる。
-//! シェアや API キーなどの秘密はレコードに入れないこと(不変条件 11)。
+//! Each entry includes the hash of the previous one, so edits, deletions and reordering are detectable.
+//! Never put secrets such as shares or API keys in a record (invariant 11).
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
@@ -13,16 +13,16 @@ use serde::{Deserialize, Serialize};
 
 const ENTRY_DOMAIN: &str = "mcp-mpc-wallet/audit-entry/v1";
 
-/// 1 件の判定の記録。
+/// The record of one judgment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditRecord {
     pub wallet: Address,
-    /// 提案(未署名 tx 全体)のハッシュ
+    /// Hash of the proposal (the whole unsigned tx)
     pub proposal_hash: B256,
-    /// 入力の要約。攻撃者由来の文字列は入れる前にエスケープ済みであること
+    /// Summary of the input. Attacker-controlled strings must already be escaped
     pub input_summary: String,
     pub policy_hash: Option<PolicyHash>,
-    /// Tenderly レスポンス本文のハッシュ
+    /// Hash of the Tenderly response body
     pub simulation_hash: Option<B256>,
     pub verdict: Verdict,
     pub reasons: Vec<String>,
@@ -72,7 +72,7 @@ pub enum AuditError {
     BrokenChain { seq: u64 },
 }
 
-/// エントリ列がチェーンとして正しいかを確かめる。
+/// Check that a sequence of entries forms a valid chain.
 pub fn verify_chain(entries: &[AuditEntry]) -> Result<(), AuditError> {
     let mut prev = B256::ZERO;
     for (expected_seq, entry) in (0u64..).zip(entries) {
@@ -87,12 +87,12 @@ pub fn verify_chain(entries: &[AuditEntry]) -> Result<(), AuditError> {
     Ok(())
 }
 
-/// 監査ログの保存先。
+/// Where the audit log is stored.
 pub trait AuditSink {
     fn persist(&mut self, entry: &AuditEntry) -> Result<(), AuditError>;
 }
 
-/// メモリ上に保持するだけの保存先(テスト用)。
+/// A store that only keeps entries in memory (for tests).
 #[derive(Default)]
 pub struct MemorySink {
     pub entries: Vec<AuditEntry>,
@@ -105,7 +105,7 @@ impl AuditSink for MemorySink {
     }
 }
 
-/// 1 行 1 エントリの JSON Lines ファイル。書くたびに fsync する。
+/// A JSON Lines file with one entry per line. Fsyncs after every write.
 pub struct JsonlSink {
     path: PathBuf,
     file: File,
@@ -159,7 +159,7 @@ impl<S: AuditSink> AuditLog<S> {
         }
     }
 
-    /// 既存のエントリを検証してから、その続きに追記するログを作る。
+    /// Verify the existing entries, then open the log to append after them.
     pub fn resume(sink: S, existing: &[AuditEntry]) -> Result<Self, AuditError> {
         verify_chain(existing)?;
         Ok(Self {
@@ -169,7 +169,7 @@ impl<S: AuditSink> AuditLog<S> {
         })
     }
 
-    /// 追記して、新しいエントリのハッシュ(チェーンの先頭)を返す。
+    /// Append and return the hash of the new entry (the head of the chain).
     pub fn append(&mut self, record: AuditRecord, timestamp_unix: u64) -> Result<B256, AuditError> {
         let mut entry = AuditEntry {
             seq: self.next_seq,
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn detects_recomputed_entry_hash() {
-        // 改ざんしたエントリのハッシュを計算し直しても、次のエントリの prev_hash と合わない
+        // Even with the tampered entry's hash recomputed, it no longer matches the next entry's prev_hash
         let mut entries = log_with_three().sink().entries.clone();
         entries[1].record.verdict = Verdict::Approve;
         entries[1].entry_hash = entries[1].compute_hash();

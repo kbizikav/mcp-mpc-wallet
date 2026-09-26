@@ -1,11 +1,11 @@
-//! Tenderly Simulation API(single simulate)による実装。
+//! Implementation with the Tenderly Simulation API (single simulate).
 //!
-//! `POST {base}/api/v1/account/{account}/project/{project}/simulate` を `X-Access-Key` で呼ぶ。
-//! 資産の移動は `transaction.transaction_info.asset_changes`、allowance の変化は
-//! `exposure_changes` から読む。形は 2026-09 時点のレスポンスで確認した。
+//! Calls `POST {base}/api/v1/account/{account}/project/{project}/simulate` with `X-Access-Key`.
+//! Asset movements are read from `transaction.transaction_info.asset_changes`, allowance changes
+//! from `exposure_changes`. The shape was checked against responses as of 2026-09.
 //!
-//! このモジュールが理解できない変化は `unrecognized_changes` に入れ、呼び出し側で
-//! 「要確認」に倒せるようにする。
+//! Changes this module does not understand go into `unrecognized_changes`, so the caller can
+//! fall back to "needs confirmation".
 
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ use crate::{
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.tenderly.co";
-/// quick モードのレスポンスは数 KB。これを大きく超えるものは受け取らない
+/// Quick mode responses are a few KB. Anything much larger is refused
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 pub struct TenderlyConfig {

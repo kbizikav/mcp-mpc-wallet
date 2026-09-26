@@ -1,9 +1,9 @@
-//! 提案の受付から送信まで。
+//! From accepting a proposal to sending it.
 //!
-//! 判定が「承認」になるのは、次がすべて揃ったときだけ:
-//! デコード成功、chainId・from・nonce の一致、方針あり、シミュレーション成功、
-//! 検算の食い違いなし、LLM の全サンプルが承認。
-//! それ以外はすべて「要確認」か「拒否」に倒れる(不変条件 7)。
+//! A judgment is "approve" only when all of the following hold:
+//! decoding succeeded, chainId, from and nonce match, a policy exists, the simulation succeeded,
+//! the cross-check found no disagreement, and every LLM sample approved.
+//! Everything else falls to "needs confirmation" or "reject" (invariant 7).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -32,12 +32,12 @@ use crate::signals::{Effects, JudgeData, TypedDataEffects};
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
-    /// 対象チェーン(初期は Base Sepolia = 84532)
+    /// The target chain (initially Base Sepolia = 84532)
     pub chain_id: u64,
-    /// LLM に同じ問い合わせを投げる回数
+    /// How many times the same query is sent to the LLM
     pub llm_samples: usize,
     pub guard: GuardConfig,
-    /// 受け付けるパスキーの RP(RP ID と origin の組)
+    /// The passkey RPs to accept (pairs of RP ID and origin)
     pub passkey_rps: Vec<RelyingParty>,
 }
 
@@ -55,14 +55,14 @@ impl NodeConfig {
 pub const DEFAULT_RP_ID: &str = "mcp-mpc-wallet.local";
 pub const DEFAULT_ORIGIN: &str = "https://mcp-mpc-wallet.local";
 
-/// 出来事を残す数(全ウォレット合計)と、1 ウォレットの一覧に出す数
+/// How many events to keep (across all wallets), and how many to list per wallet
 const ACTIVITY_LIMIT: usize = 500;
 pub(crate) const ACTIVITY_PER_WALLET: usize = 50;
 
-/// 要確認の要求は、この時間を過ぎたら捨てる
+/// Requests needing confirmation are dropped after this long
 pub(crate) const PENDING_TTL_SECS: u64 = 3_600;
 
-/// B が外部とやりとりする部品。
+/// The parts B uses to talk to the outside world.
 pub struct Components<C, S, L, T, N, K> {
     pub chain: C,
     pub simulator: S,
@@ -72,28 +72,28 @@ pub struct Components<C, S, L, T, N, K> {
     pub clock: K,
 }
 
-/// 署名するもの。
+/// What gets signed.
 pub(crate) enum Payload {
-    /// B が署名して自分で送信する
+    /// B signs and sends it itself
     Tx(Box<DecodedTx>),
-    /// B が署名して、署名をエージェントに返す
+    /// B signs and returns the signature to the agent
     TypedData,
 }
 
-/// 署名に進むために必要な、検証済みの情報。
+/// The verified information needed to go on to signing.
 pub(crate) struct Prepared {
     pub(crate) payload: Payload,
     pub(crate) key: SigningRequestKey,
     pub(crate) witness: TimeWitness,
 }
 
-/// 署名の結果。
+/// The result of signing.
 pub(crate) enum Submission {
     Sent(B256),
     Signed(Signature),
 }
 
-/// ユーザーの確認を待っている要求。
+/// A request waiting for the user's confirmation.
 pub(crate) struct Pending {
     pub(crate) prepared: Prepared,
     pub(crate) created_at: u64,
@@ -103,10 +103,10 @@ pub(crate) struct Pending {
     pub(crate) approved: bool,
 }
 
-/// 1 件の提案の判定結果。
+/// The judgment of one proposal.
 struct Assessment {
     verdict: Verdict,
-    /// 拒否時にエージェントへ返す粗い理由
+    /// The coarse reason returned to the agent on rejection
     coarse: CoarseReason,
     reasons: Vec<String>,
     summary: Option<String>,
@@ -156,9 +156,9 @@ pub struct JudgeNode<C, S, L, T, N, K, A> {
     pub(crate) audit: Mutex<AuditLog<A>>,
     pub(crate) pending: Mutex<HashMap<B256, Pending>>,
     pub(crate) passkeys: Mutex<HashMap<Address, RegisteredPasskey>>,
-    /// ユーザーに通知した直近の出来事(オーナー用の一覧で見せる)
+    /// Recent events notified to the user (shown in the owner view)
     pub(crate) activity: Mutex<VecDeque<(u64, Address, UserNotice)>>,
-    /// 提案とユーザー操作を 1 件ずつ処理する(nonce の競合を避ける)
+    /// Handle proposals and user operations one at a time (avoids nonce races)
     pub(crate) serial: tokio::sync::Mutex<()>,
 }
 
@@ -191,7 +191,7 @@ where
         }
     }
 
-    /// ユーザーに通知し、オーナー用の一覧にも残す。
+    /// Notify the user and also keep it for the owner view.
     pub(crate) fn notify(&self, notice: UserNotice) {
         {
             let mut activity = self.activity.lock().expect("activity poisoned");
@@ -207,12 +207,12 @@ where
         &self.parts
     }
 
-    /// このウォレットのシェアを持っているか。
+    /// Whether B holds a share for this wallet.
     pub fn holds(&self, wallet: Address) -> bool {
         self.parts.signer.holds(wallet)
     }
 
-    /// パスキー検証を通さずに方針を登録する(不変条件 6 を満たさない)。テスト専用。
+    /// Register a policy without passkey verification (does not satisfy invariant 6). Test only.
     #[cfg(feature = "unverified-policy")]
     pub fn install_unverified_policy(
         &self,
@@ -221,7 +221,7 @@ where
         self.policies.install_verified(policy)
     }
 
-    /// ユーザー操作による凍結。署名なしでできる。現在の凍結の世代を返す。
+    /// Freeze by user operation. Needs no signature. Returns the current freeze epoch.
     pub fn freeze(&self, wallet: Address) -> u64 {
         let mut guard = self.guard.lock().expect("guard poisoned");
         if guard.freeze(wallet) {
@@ -241,9 +241,9 @@ where
         self.audit.lock().expect("audit poisoned")
     }
 
-    /// エージェントからの提案を処理する。エージェントには粗い結果だけを返す。
+    /// Handle a proposal from the agent. The agent only gets a coarse outcome.
     ///
-    /// `peer` は提案してきた A とのセッション。承認したときだけ、閾値署名に使う。
+    /// `peer` is the session with the A that proposed it. It is used for threshold signing only on approval.
     pub async fn handle_proposal(&self, proposal: Proposal, peer: &mut T::Peer) -> AgentOutcome {
         let _serial = self.serial.lock().await;
         if let Some(outcome) = self.admit(proposal.wallet) {
@@ -253,7 +253,7 @@ where
         self.conclude(proposal.wallet, assessment, peer).await
     }
 
-    /// EIP-712 署名の提案を処理する。承認されたら署名をエージェントに返す。
+    /// Handle an EIP-712 signature proposal. If approved, the signature is returned to the agent.
     pub async fn handle_typed_data(
         &self,
         proposal: TypedDataProposal,
@@ -267,9 +267,9 @@ where
         self.conclude(proposal.wallet, assessment, peer).await
     }
 
-    /// 受け付けない提案なら、その結果を返す。
+    /// If the proposal is not accepted, return that outcome.
     fn admit(&self, wallet: Address) -> Option<AgentOutcome> {
-        // 別のウォレット宛ての提案は、レート制限の状態を作る前に弾く
+        // Reject proposals for another wallet before creating any rate limit state
         if !self.holds(wallet) {
             return Some(AgentOutcome::Rejected {
                 reason: CoarseReason::InvalidRequest,
@@ -289,14 +289,14 @@ where
         }
     }
 
-    /// 判定を記録し、承認なら署名、要確認なら保留、拒否ならユーザーに詳細を通知する。
+    /// Record the judgment; sign on approval, hold on needs-confirmation, and notify the user of details on rejection.
     async fn conclude(
         &self,
         wallet: Address,
         assessment: Assessment,
         peer: &mut T::Peer,
     ) -> AgentOutcome {
-        // 監査ログに残せなければ、署名に進まない
+        // If it cannot be written to the audit log, do not go on to signing
         if let Err(e) = self.record_audit(wallet, &assessment) {
             self.notify(UserNotice::SubmissionFailed {
                 wallet,
@@ -322,7 +322,7 @@ where
 
         match (assessment.verdict, assessment.prepared) {
             (Verdict::Approve, Some(_)) if self.is_frozen(wallet) => {
-                // 判定中にユーザーが凍結した
+                // The user froze the wallet during the judgment
                 AgentOutcome::Frozen
             }
             (Verdict::Approve, Some(prepared)) => {
@@ -366,7 +366,7 @@ where
         }
     }
 
-    /// 署名の結果をユーザーに通知し、エージェントに返す結果にする。
+    /// Notify the user of the signing result and turn it into the outcome for the agent.
     pub(crate) fn report_submission(
         &self,
         wallet: Address,
@@ -400,7 +400,7 @@ where
     async fn assess(&self, proposal: &Proposal) -> Assessment {
         let wallet = proposal.wallet;
 
-        // 1. 生の未署名 tx を自分でデコードする(エージェントの説明は使わない)
+        // 1. Decode the raw unsigned tx ourselves (the agent's description is not used)
         let decoded = match decode_unsigned(&proposal.unsigned_tx) {
             Ok(decoded) => decoded,
             Err(e) => {
@@ -414,7 +414,7 @@ where
         let request_id = decoded.signing_hash;
         let tx = &decoded.tx;
 
-        // 2. chainId と from を束縛する
+        // 2. Bind chainId and from
         if proposal.chain_id != self.config.chain_id || tx.chain_id != self.config.chain_id {
             return Assessment::reject(
                 request_id,
@@ -426,7 +426,7 @@ where
             );
         }
 
-        // 3. 時刻の証拠と nonce をチェーンから取る。将来 nonce は受け付けない
+        // 3. Get time evidence and the nonce from the chain. Future nonces are not accepted
         let (witness, pending_nonce) = match self.time_and_nonce(wallet).await {
             Ok(v) => v,
             Err(e) => {
@@ -469,7 +469,7 @@ where
             witness,
         };
 
-        // 4. 方針がなければユーザーに確認する
+        // 4. Without a policy, ask the user
         let Some(policy) = self.policies.get(wallet) else {
             return Assessment {
                 verdict: Verdict::NeedsUserConfirmation,
@@ -485,7 +485,7 @@ where
         };
         let policy_hash = Some(policy.hash());
 
-        // 5. 自分でシミュレーションする
+        // 5. Simulate it ourselves
         let report = match self.parts.simulator.simulate(&simulation_request).await {
             Ok(report) => report,
             Err(e) => {
@@ -523,7 +523,7 @@ where
             };
         }
 
-        // 6. デコード結果とシミュレーション結果を検算する
+        // 6. Cross-check the decoded tx against the simulation
         let discrepancies = crosscheck(
             wallet,
             &decoded,
@@ -539,7 +539,7 @@ where
             };
         }
 
-        // 7. 効果を方針と照合する
+        // 7. Check the effects against the policy
         self.llm_judgement(&policy, &effects, &proposal.agent_note, base)
             .await
     }
@@ -547,7 +547,7 @@ where
     async fn assess_typed_data(&self, proposal: &TypedDataProposal) -> Assessment {
         let wallet = proposal.wallet;
 
-        // 1. typed data を自分でデコードし、digest を自分で計算する
+        // 1. Decode the typed data and compute the digest ourselves
         let decoded = match decode_typed_data(&proposal.typed_data) {
             Ok(decoded) => decoded,
             Err(e) => {
@@ -561,7 +561,7 @@ where
         };
         let request_id = decoded.digest;
 
-        // 2. chainId を束縛する。domain に chainId がない署名は、別のチェーンでも使えうる
+        // 2. Bind chainId. A signature whose domain has no chainId could be used on another chain
         if proposal.chain_id != self.config.chain_id
             || decoded
                 .chain_id
@@ -625,7 +625,7 @@ where
             };
         }
 
-        // 3. 効果を方針と照合する(署名はオフチェーンなのでシミュレーションはない)
+        // 3. Check the effects against the policy (the signature is off-chain, so there is no simulation)
         let base = Assessment {
             verdict: Verdict::Reject,
             coarse: CoarseReason::PolicyViolation,
@@ -699,7 +699,7 @@ where
             .map(|_| ())
     }
 
-    /// 承認を登録してから、引き換えて署名・送信する。
+    /// Register the approval, then redeem it to sign and send.
     async fn submit(
         &self,
         wallet: Address,
@@ -715,7 +715,7 @@ where
         self.redeem_and_submit(wallet, prepared, peer).await
     }
 
-    /// 登録済みの承認を、直前に取り直した時刻と nonce で引き換えてから署名・送信する。
+    /// Redeem a registered approval with freshly fetched time and nonce, then sign and send.
     pub(crate) async fn redeem_and_submit(
         &self,
         wallet: Address,
@@ -734,11 +734,11 @@ where
         }
 
         let decoded = match prepared.payload {
-            // EIP-712 の署名はエージェントに返す(オーナーの判断で不変条件 5 の例外とした)
+            // EIP-712 signatures are returned to the agent (an exception to invariant 5, by the owner's decision)
             Payload::TypedData => return Ok(Submission::Signed(signature)),
             Payload::Tx(decoded) => *decoded,
         };
-        // 署名済み tx は B の外に出さない。自分で送信し、hash だけを返す(不変条件 5)
+        // The signed tx never leaves B. B sends it itself and returns only the hash (invariant 5)
         let (raw, tx_hash) = encode_signed(decoded.tx, signature);
         let returned = self.parts.chain.send_raw_transaction(raw).await?;
         if returned != tx_hash {

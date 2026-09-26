@@ -1,10 +1,10 @@
 use alloy_primitives::{Address, Bytes};
 use serde::{Deserialize, Serialize};
 
-/// エージェントや外部コントラクトなど、攻撃者が制御しうる文字列。
+/// A string an attacker may control, such as one from the agent or an external contract.
 ///
-/// `Display` を実装しないので、`format!` でプロンプトやログにそのまま混ざることはない。
-/// 中身を使うときは `as_untrusted_str` を明示的に呼ぶ。
+/// It does not implement `Display`, so `format!` can never slip it into a prompt or a log.
+/// To use its contents, call `as_untrusted_str` explicitly.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct UntrustedText(String);
@@ -25,27 +25,27 @@ impl std::fmt::Debug for UntrustedText {
     }
 }
 
-/// エージェントが A 経由で B に送る EIP-712 署名の提案。
+/// A proposal for an EIP-712 signature, sent by the agent to B through A.
 ///
-/// B は `typed_data` を自分でデコードして digest を計算する。署名はエージェントに返る。
+/// B decodes `typed_data` and computes the digest itself. The signature goes back to the agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypedDataProposal {
     pub wallet: Address,
     pub chain_id: u64,
-    /// EIP-712 の typed data(types / primaryType / domain / message)
+    /// EIP-712 typed data (types / primaryType / domain / message)
     pub typed_data: serde_json::Value,
     pub agent_note: UntrustedText,
 }
 
-/// エージェントが A 経由で B に送る署名の提案。
+/// A signing proposal, sent by the agent to B through A.
 ///
-/// B が信用するのは `unsigned_tx` の生バイト列だけで、`agent_note` は参考情報として扱う。
+/// B trusts only the raw bytes of `unsigned_tx`; `agent_note` is context only.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Proposal {
-    /// 署名に使うウォレットのアドレス(= tx の from)
+    /// The address of the wallet that signs (= the tx's from)
     pub wallet: Address,
     pub chain_id: u64,
-    /// EIP-2718 でエンコードした未署名 tx
+    /// The unsigned tx, EIP-2718 encoded
     pub unsigned_tx: Bytes,
     pub agent_note: UntrustedText,
 }

@@ -1,7 +1,7 @@
-//! LLM に渡す「効果」の抽出。
+//! Extracting the "effects" passed to the LLM.
 //!
-//! 値はすべて B が自分でデコード・シミュレーションしたものから作る。
-//! 攻撃者が制御しうる値はフィールド名の末尾を `_untrusted` にし、長さも切り詰める。
+//! Every value comes from B's own decoding and simulation.
+//! Fields holding attacker-controlled values end in `_untrusted`, and their length is truncated.
 
 use alloy_primitives::{Address, U256, utils::format_ether};
 use mw_chain::{DecodedTx, DecodedTypedData, KnownCall, KnownTypedData};
@@ -12,7 +12,7 @@ use serde::Serialize;
 const MAX_SYMBOL_LEN: usize = 32;
 const MAX_NOTE_LEN: usize = 1_000;
 
-/// この値以上の allowance は実質無制限とみなす。
+/// Allowances at or above this value are treated as effectively unlimited.
 fn is_unlimited(amount: U256) -> bool {
     amount >= U256::from(1) << 128
 }
@@ -95,11 +95,11 @@ impl CallEffect {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct TransferEffect {
-    /// ネイティブ ETH なら `None`
+    /// `None` for native ETH
     pub token: Option<Address>,
     pub counterparty: Address,
     pub amount_raw: String,
-    /// ネイティブ ETH のときだけ、ETH 単位の値
+    /// The value in ETH, for native ETH only
     pub amount_eth: Option<String>,
     pub token_symbol_untrusted: Option<String>,
     pub token_decimals_untrusted: Option<u8>,
@@ -136,13 +136,13 @@ pub struct AllowanceEffect {
 pub struct SimulationEffects {
     pub success: bool,
     pub gas_used: u64,
-    /// ウォレットから出ていく資産
+    /// Assets leaving the wallet
     pub outgoing: Vec<TransferEffect>,
-    /// ウォレットに入ってくる資産
+    /// Assets coming into the wallet
     pub incoming: Vec<TransferEffect>,
-    /// ウォレットが owner の allowance 変更
+    /// Allowance changes where the wallet is the owner
     pub allowance_changes: Vec<AllowanceEffect>,
-    /// ウォレットが関与しない資産移動の件数
+    /// Number of asset movements that do not involve the wallet
     pub unrelated_transfers: usize,
 }
 
@@ -227,7 +227,7 @@ impl Effects {
 
 const MAX_MESSAGE_LEN: usize = 4_000;
 
-/// EIP-712 署名が与える権限。
+/// The rights an EIP-712 signature grants.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PermitEffect {
@@ -256,7 +256,7 @@ pub enum PermitEffect {
     },
 }
 
-/// EIP-712 署名の「効果」。署名はオフチェーンなのでシミュレーションはない。
+/// The "effects" of an EIP-712 signature. The signature is off-chain, so there is no simulation.
 #[derive(Clone, Debug, Serialize)]
 pub struct TypedDataEffects {
     pub kind: &'static str,
@@ -265,9 +265,9 @@ pub struct TypedDataEffects {
     pub verifying_contract: Option<Address>,
     pub primary_type_untrusted: String,
     pub domain_name_untrusted: Option<String>,
-    /// 既知の権限付与型なら、その内容(B が読み取ったもの)
+    /// For a known type that grants rights, what it grants (as read by B)
     pub grants: Option<PermitEffect>,
-    /// message 全体(攻撃者が決められる。長さは切り詰める)
+    /// The whole message (attacker-chosen; its length is truncated)
     pub message_untrusted: String,
 }
 
@@ -337,7 +337,7 @@ impl TypedDataEffects {
     }
 }
 
-/// LLM のデータ領域に入れる文書。`effects` は tx なら `Effects`、署名なら `TypedDataEffects`。
+/// The document placed in the LLM's data section. `effects` is `Effects` for a tx, `TypedDataEffects` for a signature.
 #[derive(Clone, Debug, Serialize)]
 pub struct JudgeData<'a, E> {
     pub user_policy: &'a str,
@@ -361,9 +361,9 @@ mod tests {
 
     #[test]
     fn truncates_on_char_boundary() {
-        let text = UntrustedText::new("あいうえお");
-        assert_eq!(truncate(&text, 3), "あいう…[truncated]");
-        assert_eq!(truncate(&text, 5), "あいうえお");
+        let text = UntrustedText::new("αβγδε");
+        assert_eq!(truncate(&text, 3), "αβγ…[truncated]");
+        assert_eq!(truncate(&text, 5), "αβγδε");
     }
 
     #[test]

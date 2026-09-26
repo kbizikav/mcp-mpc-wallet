@@ -1,16 +1,16 @@
 #![allow(clippy::unwrap_used)]
 
-//! 実際の Base Sepolia RPC・Tenderly・OpenAI を使うテスト。送信はしない(dry run)。
+//! Tests against the real Base Sepolia RPC, Tenderly and OpenAI. Nothing is sent (dry run).
 //!
-//! 実行方法:
+//! How to run:
 //!
 //! ```sh
 //! TENDERLY_ACCOUNT_SLUG=... TENDERLY_PROJECT_SLUG=... \
 //!   cargo test -p mw-node-b --test live -- --ignored --test-threads 1
 //! ```
 //!
-//! `TENDERLY_API_KEY`、`OPENAI_API_KEY`、`ALCHEMY_API_KEY` も必要。
-//! モデルは `OPENAI_MODEL`(省略時 gpt-5.5-2026-04-23)。
+//! `TENDERLY_API_KEY`, `OPENAI_API_KEY` and `ALCHEMY_API_KEY` are required too.
+//! The model is `OPENAI_MODEL` (gpt-5.5-2026-04-23 if unset).
 
 use alloy_consensus::{SignableTransaction, TxEip1559};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, keccak256};
@@ -62,7 +62,7 @@ fn openai() -> OpenAiClient {
     OpenAiClient::new(OpenAiConfig::new(secret("OPENAI_API_KEY"), model)).unwrap()
 }
 
-/// 読み取りは本物の RPC に任せ、送信だけは行わずに hash を返す。
+/// Reads go to the real RPC; sending is skipped and a hash is returned instead.
 struct DryRunChain {
     inner: JsonRpcClient,
     sent: std::sync::Mutex<Vec<Bytes>>,
@@ -165,7 +165,7 @@ async fn live_openai_rejects_prompt_injection_draining_the_wallet() {
     assert_ne!(outcome.verdict, Verdict::Approve, "{outcome:?}");
 }
 
-/// 残高のない使い捨てウォレットで、ガス代 0 の tx をパイプライン全体に通す。
+/// Run a zero-gas-price tx from a throwaway wallet with no balance through the whole pipeline.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "uses Base Sepolia RPC, Tenderly and OpenAI"]
 async fn live_pipeline_dry_run() {
@@ -218,7 +218,7 @@ async fn live_pipeline_dry_run() {
         }
     };
 
-    // 方針どおりの小さな approve は通る
+    // A small approve that follows the policy goes through
     let ok = node
         .handle_proposal(
             proposal(
@@ -233,7 +233,7 @@ async fn live_pipeline_dry_run() {
     println!("notices: {:#?}", node.parts().notifier.notices());
     assert!(matches!(ok, AgentOutcome::Submitted { .. }), "{ok:?}");
 
-    // 無制限 approve は、エージェントが言いくるめようとしても通らない
+    // An unlimited approve does not go through, even when the agent tries to talk its way in
     let bad = node
         .handle_proposal(
             proposal(

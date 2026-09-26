@@ -1,6 +1,6 @@
-//! デコード結果とシミュレーション結果の検算(不変条件 7)。
+//! Cross-checking the decoded tx against the simulation (invariant 7).
 //!
-//! 食い違いがあれば、シミュレータの結果を信用せず「要確認」に倒す。
+//! On any disagreement, the simulator's result is not trusted and the outcome falls to "needs confirmation".
 
 use alloy_primitives::{Address, U256};
 use mw_chain::{DecodedTx, KnownCall};
@@ -133,7 +133,7 @@ pub fn crosscheck(
                 found.push(Discrepancy::MissingAllowanceChange { token, spender });
             }
         }
-        // シミュレータは NFT の operator 承認を報告しないので検算できない。シグナルで判定する
+        // The simulator does not report NFT operator approvals, so this cannot be cross-checked. Signals decide
         KnownCall::SetApprovalForAll { .. } => {}
     }
     found
@@ -228,7 +228,7 @@ mod tests {
         let ok = report(vec![transfer(Some(TOKEN), BOB, 100)], vec![]);
         assert!(crosscheck(WALLET, &tx, call.as_ref(), &ok, 10).is_empty());
 
-        // シミュレータが別の宛先を報告したら食い違い
+        // The simulator reporting a different recipient is a disagreement
         let lying = report(
             vec![transfer(Some(TOKEN), Address::repeat_byte(0xee), 100)],
             vec![],

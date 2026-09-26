@@ -1,7 +1,7 @@
-//! EIP-712 typed data のデコード。
+//! Decoding EIP-712 typed data.
 //!
-//! digest は B が自分で計算する(A やエージェントの計算は使わない)。
-//! 資産を動かす権限を与える既知の型(ERC-2612 Permit、Permit2)は、中身を読み取ってシグナルにする。
+//! B computes the digest itself (it never uses A's or the agent's computation).
+//! Known types that grant rights to move assets (ERC-2612 Permit, Permit2) are read and turned into signals.
 
 use alloy_dyn_abi::TypedData;
 use alloy_primitives::{Address, B256, U256, keccak256};
@@ -10,20 +10,20 @@ use serde::Serialize;
 #[derive(Clone, Debug)]
 pub struct DecodedTypedData {
     pub typed: TypedData,
-    /// 署名する digest(`\x19\x01 || domainSeparator || hashStruct(message)` の keccak256)
+    /// The digest to sign (keccak256 of `\x19\x01 || domainSeparator || hashStruct(message)`)
     pub digest: B256,
     pub chain_id: Option<u64>,
     pub verifying_contract: Option<Address>,
-    /// 入力の JSON を正規化したもの。hash を監査ログに残す
+    /// The input JSON, normalized. Its hash goes into the audit log
     pub canonical_json: Vec<u8>,
     pub known: Option<KnownTypedData>,
 }
 
-/// 資産を動かす権限を与える既知の typed data。
+/// Known typed data that grants rights to move assets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum KnownTypedData {
-    /// ERC-2612: `token` の allowance を `spender` に与える
+    /// ERC-2612: grants `spender` an allowance of `token`
     Erc2612Permit {
         token: Option<Address>,
         owner: Address,
@@ -31,7 +31,7 @@ pub enum KnownTypedData {
         value: U256,
         deadline: U256,
     },
-    /// Permit2 PermitSingle: Permit2 経由の allowance を `spender` に与える
+    /// Permit2 PermitSingle: grants `spender` an allowance through Permit2
     Permit2Allowance {
         token: Address,
         amount: U256,
@@ -39,7 +39,7 @@ pub enum KnownTypedData {
         spender: Address,
         sig_deadline: U256,
     },
-    /// Permit2 PermitTransferFrom: `spender` が一度だけ `token` を持ち出せる
+    /// Permit2 PermitTransferFrom: `spender` may take `token` out once
     Permit2Transfer {
         token: Address,
         amount: U256,
@@ -88,7 +88,7 @@ fn address(v: &serde_json::Value) -> Option<Address> {
     v.as_str()?.parse().ok()
 }
 
-/// 10 進の文字列、0x 始まりの 16 進の文字列、JSON の数値を受け付ける。
+/// Accepts a decimal string, a hex string starting with 0x, or a JSON number.
 fn uint(v: &serde_json::Value) -> Option<U256> {
     match v {
         serde_json::Value::String(s) => match s.strip_prefix("0x") {

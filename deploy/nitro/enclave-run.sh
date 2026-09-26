@@ -1,12 +1,12 @@
 #!/bin/sh
-# Enclave の中で動く起動スクリプト。
+# Startup script that runs inside the enclave.
 #
-# vsock のポート(親の CID は 3):
-#   9000  親 → enclave: 起動時の一式(env.sh と /data の中身)を tar で受け取る
-#   9001  enclave → 親: /data の中身(封印済みシェア、方針、監査ログ)を定期的に送る
-#   9002  enclave → 親: ログ
-#   8000  KMS(kmstool が直接使う)、8001〜 外部 API への vsock-proxy
-#   7443  親 → enclave: A からの mTLS(TLS は enclave の中で終端する)
+# vsock ports (the parent's CID is 3):
+#   9000  parent → enclave: the startup bundle (env.sh and the contents of /data) as a tar
+#   9001  enclave → parent: the contents of /data (sealed shares, policies, audit log), sent periodically
+#   9002  enclave → parent: logs
+#   8000  KMS (used directly by kmstool), 8001+ vsock-proxy to external APIs
+#   7443  parent → enclave: mTLS from A (TLS terminates inside the enclave)
 set -eu
 
 ip link set lo up
@@ -17,7 +17,7 @@ socat -u VSOCK-LISTEN:9000 - | tar -x -C /data
 . /data/env.sh
 rm -f /data/env.sh
 
-# 外部ホストを loopback の別アドレスに向け、vsock-proxy に中継する(TLS は B が終端する)
+# Point external hosts at separate loopback addresses and relay them to the vsock-proxy (B terminates TLS)
 i=2
 for entry in base-sepolia.g.alchemy.com:8001 api.tenderly.co:8002 api.openai.com:8003; do
     host=${entry%%:*}
@@ -38,7 +38,7 @@ log() {
 }
 
 set +e
-# パスキーの RP は serve のときだけ(ブラウザの localhost と、開発用ソフトウェアパスキー)
+# Passkey RPs only for serve (the browser on localhost, and the development software passkey)
 extra=""
 if [ "$MW_MODE" = "serve" ]; then
     extra="--passkey-rp mcp-mpc-wallet.local=https://mcp-mpc-wallet.local --passkey-rp localhost=http://localhost:8787"

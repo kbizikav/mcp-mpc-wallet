@@ -1,7 +1,7 @@
-//! AI 判定の LLM 呼び出しの抽象化と、OpenAI Responses API による実装。
+//! Abstraction over the LLM calls of the AI judgment, and an implementation with the OpenAI Responses API.
 //!
-//! プロンプトは「固定の指示」と「データ領域」に分ける。攻撃者が制御しうる文字列は
-//! データ領域にだけ入れる(不変条件 8)。
+//! The prompt is split into "fixed instructions" and a "data section". Attacker-controlled strings
+//! go into the data section only (invariant 8).
 
 mod judge;
 pub mod openai;
@@ -14,14 +14,14 @@ pub use prompt::{INSTRUCTIONS, build_request, escape_data};
 use std::future::Future;
 use std::sync::Mutex;
 
-/// LLM への 1 回の問い合わせ。
+/// One query to the LLM.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LlmRequest {
-    /// 固定テンプレートから作った指示。攻撃者由来の文字列を含めない
+    /// Instructions built from a fixed template. Never contains attacker-controlled strings
     pub instructions: String,
-    /// JSON でエスケープ済みのデータ領域
+    /// The data section, JSON-escaped
     pub data: String,
-    /// 出力の JSON schema(構造化出力)
+    /// JSON schema of the output (structured output)
     pub response_schema: serde_json::Value,
 }
 
@@ -34,17 +34,17 @@ pub enum LlmError {
 }
 
 pub trait LlmClient: Send + Sync {
-    /// 固定したモデルのバージョン。監査ログに残す
+    /// The pinned model version. Recorded in the audit log
     fn model_id(&self) -> &str;
 
-    /// 生の出力テキストを返す。パースは呼び出し側が行い、失敗は fail closed で扱う
+    /// Return the raw output text. The caller parses it and treats failures as fail closed
     fn complete(
         &self,
         request: &LlmRequest,
     ) -> impl Future<Output = Result<String, LlmError>> + Send;
 }
 
-/// あらかじめ決めた出力を順に返すモック。
+/// A mock that returns predefined outputs in order.
 pub struct ScriptedLlm {
     responses: Mutex<Vec<Result<String, String>>>,
     requests: Mutex<Vec<LlmRequest>>,

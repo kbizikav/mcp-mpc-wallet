@@ -1,4 +1,4 @@
-# 親インスタンスの vsock-proxy が中継してよい宛先
+# Destinations the parent instance's vsock-proxy may relay to
 allowlist:
   - {address: kms.ap-northeast-1.amazonaws.com, port: 443}
   - {address: base-sepolia.g.alchemy.com, port: 443}

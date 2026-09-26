@@ -1,8 +1,8 @@
-//! テスト用: ブラウザの WebAuthn と同じ形式の値を、ソフトウェアパスキーで作る。
+//! For tests: produce values in the same format as the browser's WebAuthn, using a software passkey.
 //!
 //! ```text
-//! browser_emulator new <file>                 # パスキーを作り、adopt 用の JSON を出す
-//! browser_emulator sign <file> < challenge.json   # /api/challenge の応答から /api/submit の本文を作る
+//! browser_emulator new <file>                 # create a passkey and print the JSON for adopt
+//! browser_emulator sign <file> < challenge.json   # turn a /api/challenge response into a /api/submit body
 //! ```
 
 use base64::Engine;
@@ -32,7 +32,7 @@ fn main() -> anyhow::Result<()> {
         "sign" => {
             let challenge: serde_json::Value = serde_json::from_reader(std::io::stdin())?;
             let operation: UserOperation = serde_json::from_value(challenge["operation"].clone())?;
-            // サーバが返した challenge が、操作から計算したものと一致すること
+            // The challenge the server returned must match the one computed from the operation
             anyhow::ensure!(
                 challenge["challenge"] == URL_SAFE_NO_PAD.encode(operation.challenge()),
                 "server challenge does not match the operation"

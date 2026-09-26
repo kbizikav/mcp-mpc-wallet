@@ -1,12 +1,12 @@
-//! 外部 API(RPC、Tenderly、OpenAI)用の HTTPS クライアント。
+//! HTTPS client for external APIs (RPC, Tenderly, OpenAI).
 //!
-//! 証明書は OS の証明書ストアではなく、同梱した Mozilla のルート(webpki-roots)で検証する。
-//! Nitro Enclave の中には OS の証明書ストアがないため。
+//! Certificates are verified against the bundled Mozilla roots (webpki-roots), not the OS store,
+//! because there is no OS certificate store inside a Nitro Enclave.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-/// HTTPS 専用で、webpki-roots で検証する rustls クライアントを作る。
+/// Build an HTTPS-only rustls client that verifies with webpki-roots.
 pub fn client(timeout: Duration) -> Result<reqwest::Client, String> {
     let roots = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
@@ -27,9 +27,9 @@ pub fn client(timeout: Duration) -> Result<reqwest::Client, String> {
         .map_err(describe)
 }
 
-/// reqwest のエラーを、URL を含めずに原因の連鎖まで文字列にする。
+/// Turn a reqwest error, with its chain of causes, into a string without the URL.
 ///
-/// URL には API キーが含まれうるので、エラー文に出してはいけない。
+/// The URL may contain an API key, so it must never appear in an error message.
 pub fn describe(error: reqwest::Error) -> String {
     let error = error.without_url();
     let mut out = error.to_string();

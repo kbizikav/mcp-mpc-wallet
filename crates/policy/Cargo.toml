@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# 開発用のソフトウェアパスキー(秘密鍵をファイルに置く)。本物のパスキーの代わりにだけ使う
+# Development software passkey (the private key sits in a file). Only a stand-in for a real passkey
 software-passkey = ["dep:rand_core"]
 
 [dependencies]

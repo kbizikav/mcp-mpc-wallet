@@ -1,4 +1,4 @@
-//! Nitro Secure Module(`/dev/nsm`)で attestation document を発行する。Enclave の中でだけ動く。
+//! Issues attestation documents with the Nitro Secure Module (`/dev/nsm`). Only works inside an enclave.
 
 use aws_nitro_enclaves_nsm_api::api::{Request, Response};
 use aws_nitro_enclaves_nsm_api::driver::{nsm_exit, nsm_init, nsm_process_request};

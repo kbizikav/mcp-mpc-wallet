@@ -1,4 +1,4 @@
-//! パスキー署名つきのユーザー操作と、ユーザーが承認した要求の再開。
+//! User operations signed with the passkey, and resuming requests the user approved.
 
 #![allow(clippy::unwrap_used)]
 
@@ -77,7 +77,7 @@ fn policy(wallet: Address, version: u64) -> UserOperation {
     }
 }
 
-/// 方針がないので必ず「要確認」になる提案。
+/// A proposal that always needs confirmation, because there is no policy.
 fn proposal(wallet: Address) -> Proposal {
     let tx = TxEip1559 {
         chain_id: CHAIN_ID,
@@ -124,7 +124,7 @@ async fn policy_requires_the_registered_passkey() {
         UserResponse::PolicySet { version: 1 }
     );
 
-    // 別のパスキー(同じ credential id を名乗っても)では変えられない
+    // Another passkey cannot change it (even one claiming the same credential id)
     let mut impostor = SoftwarePasskey::generate(DEFAULT_RP_ID, DEFAULT_ORIGIN);
     let mut forged = impostor.sign(policy(wallet, 2));
     forged.assertion.credential_id = passkey.credential_id.clone();
@@ -133,7 +133,7 @@ async fn policy_requires_the_registered_passkey() {
         .await;
     assert!(is_error(&r), "{r:?}");
 
-    // 署名済みの操作の再送(カウンタが進まない)は受け付けない
+    // A replayed signed operation (the counter did not advance) is not accepted
     let replay = passkey.sign(policy(wallet, 3));
     let first = node
         .handle_user_request(UserRequest::Signed {
@@ -146,12 +146,12 @@ async fn policy_requires_the_registered_passkey() {
         .await;
     assert!(is_error(&second));
 
-    // 古いバージョンには戻せない
+    // It cannot go back to an older version
     assert!(is_error(
         &signed(&node, &mut passkey, policy(wallet, 2)).await
     ));
 
-    // パスキーの差し替えは初回登録の口ではできない
+    // The passkey cannot be rotated through the first-registration path
     assert!(
         node.register_passkey(wallet, impostor.registration())
             .is_err()
@@ -164,7 +164,7 @@ async fn user_approval_then_resume_submits_once() {
     let wallet = node.parts().signer.address();
     let request_id = pending_request(&node).await;
 
-    // 承認前の再開は保留のまま
+    // Resuming before approval keeps it pending
     assert_eq!(
         node.resume(wallet, request_id, &mut ()).await,
         AgentOutcome::PendingUserConfirmation { request_id }
@@ -175,7 +175,7 @@ async fn user_approval_then_resume_submits_once() {
         signed(&node, &mut passkey, approve.clone()).await,
         UserResponse::Approved { request_id }
     );
-    // 二重承認はできない
+    // It cannot be approved twice
     assert!(is_error(&signed(&node, &mut passkey, approve).await));
 
     let outcome = node.resume(wallet, request_id, &mut ()).await;
@@ -185,7 +185,7 @@ async fn user_approval_then_resume_submits_once() {
     );
     assert_eq!(node.parts().chain.sent().len(), 1);
 
-    // 同じ要求はもう使えない
+    // The same request cannot be used again
     assert_eq!(
         node.resume(wallet, request_id, &mut ()).await,
         AgentOutcome::Rejected {
@@ -223,7 +223,7 @@ async fn approval_of_a_stale_request_is_refused() {
     let (node, mut passkey) = setup();
     let wallet = node.parts().signer.address();
     let request_id = pending_request(&node).await;
-    // 別の tx が先に通って nonce が進んだ
+    // Another tx went through first and the nonce moved on
     node.parts().chain.set_nonce(wallet, 1);
     assert!(is_error(
         &signed(
@@ -276,7 +276,7 @@ async fn freeze_without_passkey_unfreeze_with_current_epoch() {
         AgentOutcome::Frozen
     );
 
-    // 別の世代に対する解除は通らない
+    // An unfreeze for a different epoch does not work
     assert!(is_error(
         &signed(
             &node,
@@ -311,7 +311,7 @@ async fn listing_pending_requires_a_fresh_signature() {
     let (node, mut passkey) = setup();
     let wallet = node.parts().signer.address();
     let request_id = pending_request(&node).await;
-    // 拒否される提案も 1 件(別チェーン)
+    // Plus one proposal that is rejected (another chain)
     let mut other_chain = proposal(wallet);
     other_chain.chain_id = 1;
     node.handle_proposal(other_chain, &mut ()).await;
@@ -347,7 +347,7 @@ async fn listing_pending_requires_a_fresh_signature() {
             assert_eq!(requests[0].request_id, request_id);
             assert!(!requests[0].approved);
             assert_eq!(policy_text.as_deref(), Some("small transfers only"));
-            // 新しい順: 方針の更新 → 拒否 → 要確認
+            // Newest first: policy update → rejection → needs confirmation
             let kinds: Vec<&str> = recent
                 .iter()
                 .map(|a| a.notice["kind"].as_str().unwrap())
@@ -382,7 +382,7 @@ async fn state_survives_snapshot_and_restore() {
             passkey_registered: true,
         }
     );
-    // 署名カウンタも引き継がれるので、以前の assertion は再送できない
+    // The signature counter carries over too, so earlier assertions cannot be replayed
     assert_eq!(snapshot.passkeys[0].1.sign_count, passkey.sign_count);
 }
 
@@ -415,7 +415,7 @@ async fn passkey_rotation_requires_the_current_passkey() {
     let wallet = node.parts().signer.address();
     let mut new = SoftwarePasskey::generate(DEFAULT_RP_ID, DEFAULT_ORIGIN);
 
-    // 新しいパスキーが自分で自分を登録することはできない
+    // A new passkey cannot register itself
     let self_signed = new.sign(UserOperation::RotatePasskey {
         wallet,
         new_passkey: new.registration(),
@@ -440,7 +440,7 @@ async fn passkey_rotation_requires_the_current_passkey() {
         .await,
         UserResponse::PasskeyRotated
     );
-    // 以降は新しいパスキーだけが有効
+    // From now on only the new passkey is valid
     assert!(is_error(&signed(&node, &mut old, policy(wallet, 1)).await));
     assert_eq!(
         signed(&node, &mut new, policy(wallet, 1)).await,

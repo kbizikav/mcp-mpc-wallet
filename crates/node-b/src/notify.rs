@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use alloy_primitives::{Address, B256};
 use serde::Serialize;
 
-/// ユーザーにだけ見せる通知。判定の詳細な理由はここにだけ載せる。
+/// A notification shown to the user only. Detailed judgment reasons appear only here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UserNotice {
@@ -26,7 +26,7 @@ pub enum UserNotice {
         wallet: Address,
         tx_hash: B256,
     },
-    /// EIP-712 の署名をエージェントに渡した
+    /// An EIP-712 signature was handed to the agent
     Signed {
         wallet: Address,
         request_id: B256,
@@ -69,7 +69,7 @@ pub trait UserNotifier: Send + Sync {
     fn notify(&self, notice: UserNotice);
 }
 
-/// 通知を記録するだけの実装(テスト用)。
+/// An implementation that only records notifications (for tests).
 #[derive(Default)]
 pub struct RecordingNotifier(Mutex<Vec<UserNotice>>);
 

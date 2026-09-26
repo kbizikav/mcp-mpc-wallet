@@ -18,11 +18,11 @@ pub enum ChainError {
     Rejected(String),
 }
 
-/// B が TLS 経由で使うチェーン RPC(本実装は M3)。
+/// The chain RPC that B uses over TLS (the real implementation is M3).
 pub trait ChainClient: Send + Sync {
     fn chain_id(&self) -> impl Future<Output = Result<u64, ChainError>> + Send;
     fn latest_block(&self) -> impl Future<Output = Result<BlockInfo, ChainError>> + Send;
-    /// pending を含めたアカウントの次の nonce
+    /// The account's next nonce, including pending txs
     fn pending_nonce(
         &self,
         address: Address,
@@ -33,7 +33,7 @@ pub trait ChainClient: Send + Sync {
     ) -> impl Future<Output = Result<B256, ChainError>> + Send;
 }
 
-/// テスト用のチェーン。状態を直接書き換えられる。
+/// A chain for tests. Its state can be written directly.
 pub struct MockChain {
     pub chain_id: u64,
     state: Mutex<MockState>,

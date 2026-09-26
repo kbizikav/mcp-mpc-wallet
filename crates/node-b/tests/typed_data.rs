@@ -1,4 +1,4 @@
-//! EIP-712 署名: B が自分で digest を計算して判定し、承認なら署名をエージェントに返す。
+//! EIP-712 signatures: B computes the digest itself, judges it, and on approval returns the signature to the agent.
 
 #![allow(clippy::unwrap_used)]
 
@@ -212,7 +212,7 @@ async fn permit_without_chain_id_needs_the_owner_then_resumes_to_a_signature() {
     assert_eq!(request_id, decode_typed_data(&typed).unwrap().digest);
     assert!(node.parts().llm.requests().is_empty());
 
-    // typed data にはアカウントの nonce がないので、nonce が進んでいても承認・再開できる
+    // Typed data has no account nonce, so it can be approved and resumed even after the nonce moved on
     node.parts().chain.set_nonce(wallet, 5);
     let approved = node
         .handle_user_request(UserRequest::Signed {

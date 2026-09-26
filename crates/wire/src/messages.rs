@@ -4,85 +4,85 @@ use mw_mpc::net::WireMsg;
 use mw_policy::{RegisteredPasskey, SignedUserOperation, UserRequest, UserResponse};
 use serde::{Deserialize, Serialize};
 
-/// A(ユーザーの PC)から B(判定ノード)へ。
+/// From A (the user's machine) to B (the judge node).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AtoB {
-    /// 署名の提案。B が判定し、承認なら続けて `SignRequest` を送ってくる
+    /// A signing proposal. B judges it and, if approved, follows up with a `SignRequest`
     Propose {
         proposal: Proposal,
     },
-    /// EIP-712 署名の提案。承認されたら署名が `Outcome` で返る
+    /// An EIP-712 signature proposal. If approved, the signature comes back in `Outcome`
     ProposeTypedData {
         proposal: TypedDataProposal,
     },
-    /// ユーザーが承認した要求の署名・送信を再開する
+    /// Resume signing and sending a request the user approved
     Resume {
         wallet: Address,
         request_id: B256,
     },
-    /// ユーザーアプリからの操作(方針・承認・凍結など)
+    /// An operation from the user app (policy, approval, freeze, ...)
     User {
         request: UserRequest,
     },
-    /// A の端末をなくしたときの復旧。送り手は C のシェアで署名に参加する
+    /// Recovery when A's device is lost. The sender joins the signing with share C
     Recover {
         signed: SignedUserOperation,
         unsigned_tx: Bytes,
     },
-    /// B(enclave)に attestation document を求める。TLS 接続の直後に送る
+    /// Ask B (in the enclave) for an attestation document. Sent right after the TLS connection is set up
     Attest {
         nonce: B256,
     },
-    /// B のシェアがまだないときだけ受け付ける鍵生成
+    /// Key generation, accepted only while B has no share yet
     Keygen {
         session: B256,
-        /// 新しいウォレットの最初のパスキー。attestation を検証した接続の上で登録される
+        /// The new wallet's first passkey. Registered over the attested connection
         #[serde(default)]
         passkey: Option<RegisteredPasskey>,
     },
-    /// 鍵生成が終わり、A 側で得た公開鍵のアドレス(B と一致を確認する)
+    /// Key generation finished; the address of the public key A obtained (checked to match B's)
     KeygenResult {
         address: Address,
     },
     Mpc {
         msg: WireMsg,
     },
-    /// A の部分署名。B にだけ送る
+    /// A's partial signature. Sent to B only
     PartialSignature {
         partial: serde_json::Value,
     },
-    /// A が署名要求を断った
+    /// A refused the signing request
     Decline {
         reason: String,
     },
 }
 
-/// B から A へ。
+/// From B to A.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BtoA {
-    /// 承認した tx の署名に参加してほしい。`signing_hash` は A が提案したものと一致しなければならない
+    /// Please join the signing of an approved tx. `signing_hash` must match what A proposed
     SignRequest {
         session: B256,
         signing_hash: B256,
     },
     KeygenAccepted,
-    /// user_data に B の TLS 証明書の SHA-256 を入れた attestation document
+    /// An attestation document with the SHA-256 of B's TLS certificate in user_data
     Attestation {
         document: Bytes,
     },
     KeygenDone {
         address: Address,
     },
-    /// B がシェアを封印し、ウォレットを使える状態にした
+    /// B sealed its share and the wallet is ready to use
     KeygenStored {
         address: Address,
     },
     Mpc {
         msg: WireMsg,
     },
-    /// 最終結果。署名済み tx は含まない
+    /// The final outcome. Never contains a signed tx
     Outcome {
         outcome: AgentOutcome,
     },
@@ -94,7 +94,7 @@ pub enum BtoA {
     },
 }
 
-// MPC 以外のメッセージは、後で読むためにそのまま返す(Err に載るのは意図どおり)
+// Non-MPC messages are returned as is, to be read later (carrying them in Err is intended)
 #[allow(clippy::result_large_err)]
 impl AtoB {
     pub fn into_mpc(self) -> Result<WireMsg, Self> {

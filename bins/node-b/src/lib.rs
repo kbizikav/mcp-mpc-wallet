@@ -1,4 +1,4 @@
-//! 判定ノード B のサーバ: A との mTLS 接続、鍵生成、cggmp21 による閾値署名。
+//! Judge node B's server: the mTLS connection with A, key generation, and threshold signing with cggmp21.
 
 pub mod keygen;
 pub mod net;
@@ -8,15 +8,15 @@ pub mod signer;
 
 pub use signer::CggmpSigner;
 
-/// B のシェアを SealedStorage に保存するときのラベル(最初のウォレット。互換のため)
+/// Label for B's share in SealedStorage (the first wallet, kept for compatibility)
 pub const SHARE_LABEL: &str = "share-b";
 
-/// ウォレットごとのシェアのラベル。
+/// Label for each wallet's share.
 pub fn share_label(wallet: alloy_primitives::Address) -> String {
     format!("{SHARE_LABEL}-{}", alloy_primitives::hex::encode(wallet))
 }
 
-/// 封印されたシェアをすべて復号し、署名器に読み込む。読み込んだウォレットを返す。
+/// Unseal every sealed share and load it into the signer. Returns the loaded wallets.
 pub fn load_shares<S>(
     storage: &dyn mw_tee::SealedStorage,
     signer: &CggmpSigner<S>,
@@ -34,7 +34,7 @@ pub fn load_shares<S>(
     Ok(wallets)
 }
 
-/// 新しいウォレットのシェアを封印してから、署名器に加える。
+/// Seal a new wallet's share, then add it to the signer.
 pub fn store_share<S>(
     storage: &dyn mw_tee::SealedStorage,
     signer: &CggmpSigner<S>,
@@ -47,7 +47,7 @@ pub fn store_share<S>(
     Ok(wallet)
 }
 
-/// enclave の中で attestation document を発行する。user_data は TLS 証明書の SHA-256。
+/// Issue an attestation document inside the enclave. user_data is the SHA-256 of the TLS certificate.
 pub struct AttestationService {
     pub attestor: Box<dyn mw_tee::Attestor>,
     pub cert_hash: [u8; 32],

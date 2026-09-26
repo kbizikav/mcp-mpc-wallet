@@ -7,11 +7,11 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# 開発用のモック(TEE なし)。本番ビルドで有効にしてはいけない
+# Development mock (no TEE). Never enable in production builds
 insecure-mock = []
-# Nitro Enclave の中で KMS(attestation つき)で封印する
+# Seal with KMS (with attestation) inside a Nitro Enclave
 nitro = ["dep:aes-gcm", "dep:base64", "dep:rand_core", "dep:aws-nitro-enclaves-nsm-api"]
-# Nitro Enclave の attestation document を検証する(A 側)
+# Verify Nitro Enclave attestation documents (A's side)
 attest-verify = ["dep:attestation-doc-validation", "dep:base64", "dep:hex"]
 
 [dependencies]

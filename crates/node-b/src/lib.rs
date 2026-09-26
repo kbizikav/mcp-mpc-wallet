@@ -1,8 +1,8 @@
-//! 判定ノード B の中核: 提案の受付からデコード・検証・シミュレーション・AI 判定・
-//! 閾値署名・送信まで。
+//! The core of judge node B: from accepting a proposal through decoding, validation, simulation,
+//! AI judgment and threshold signing to sending.
 //!
-//! 外部とのやりとり(チェーン RPC、シミュレータ、LLM、閾値署名、通知、時計)は
-//! trait で受け取るので、テストではモックに差し替えられる。
+//! Everything external (chain RPC, simulator, LLM, threshold signing, notifications, clock)
+//! comes in through traits, so tests can swap in mocks.
 
 pub mod clock;
 pub mod crosscheck;

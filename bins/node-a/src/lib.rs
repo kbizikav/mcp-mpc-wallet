@@ -1,7 +1,7 @@
-//! 署名ノード A: ユーザーの PC でエージェントと同居する MCP サーバ。
+//! Signing node A: an MCP server that runs next to the agent on the user's machine.
 //!
-//! A のシェアはエージェントやマルウェアに読まれうる前提で扱う。資金を守るのは B の判定。
-//! A は B が求めた署名要求のうち、自分が提案した tx の hash にだけ部分署名する。
+//! A's share is treated as readable by the agent or malware. B's judgment is what protects the funds.
+//! Of B's signing requests, A only partially signs the hash of a tx that A itself proposed.
 
 pub mod mcp;
 pub mod session;

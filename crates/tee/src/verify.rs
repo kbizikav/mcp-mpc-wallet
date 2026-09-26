@@ -1,10 +1,10 @@
-//! Nitro Enclave の attestation document の検証(A 側)。
+//! Verifying Nitro Enclave attestation documents (A's side).
 //!
-//! attestation-doc-validation を使い、次をすべて確かめる:
-//! - COSE の署名が、AWS Nitro のルート証明書までつながる証明書で正しく付いている
-//! - PCR0(と指定されていれば PCR1, PCR2)が期待するイメージの値
-//! - nonce がこちらの送った値(使い回し防止)
-//! - user_data が期待する値(TLS 証明書の hash)
+//! Uses attestation-doc-validation and checks all of the following:
+//! - The COSE signature is valid, made with a certificate that chains up to the AWS Nitro root certificate
+//! - PCR0 (and PCR1, PCR2 if given) are the values of the expected image
+//! - The nonce is the one we sent (prevents reuse)
+//! - user_data is the expected value (the hash of the TLS certificate)
 
 use attestation_doc_validation::attestation_doc::PCRProvider;
 use attestation_doc_validation::{
@@ -15,7 +15,7 @@ use base64::engine::general_purpose::STANDARD;
 
 use crate::TeeError;
 
-/// 期待する測定値(16 進、小文字)。
+/// Expected measurements (hex, lowercase).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExpectedPcrs {
     pub pcr0: String,

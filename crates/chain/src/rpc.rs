@@ -1,6 +1,6 @@
-//! JSON-RPC over HTTPS(rustls)による `ChainClient`。
+//! `ChainClient` over JSON-RPC over HTTPS (rustls).
 //!
-//! RPC の URL には API キーが含まれうるので、秘密として保持し、エラー文にも URL を出さない。
+//! The RPC URL may contain an API key, so it is kept as a secret and never appears in error messages.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -50,14 +50,14 @@ struct Receipt {
     block_number: Option<U64>,
 }
 
-/// 手数料の提案値。
+/// Suggested fees.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeeSuggestion {
     pub max_fee_per_gas: u128,
     pub max_priority_fee_per_gas: u128,
 }
 
-/// 採掘された tx のレシート。
+/// Receipt of a mined tx.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReceiptInfo {
     pub success: bool,
@@ -65,7 +65,7 @@ pub struct ReceiptInfo {
 }
 
 impl JsonRpcClient {
-    /// 接続して chainId が期待どおりかを確かめる。
+    /// Connect and check that the chainId is the expected one.
     pub async fn connect(url: SecretString, expected_chain_id: u64) -> Result<Self, ChainError> {
         let http = mw_http::client(Duration::from_secs(15)).map_err(ChainError::Unavailable)?;
         let client = Self {
@@ -115,7 +115,7 @@ impl JsonRpcClient {
     }
 }
 
-/// A(ユーザーの PC)が tx を組み立てるときに使う読み取り。B の判定には使わない。
+/// Reads that A (the user's machine) uses to build txs. Never used for B's judgment.
 impl JsonRpcClient {
     pub async fn balance(&self, address: Address) -> Result<U256, ChainError> {
         self.call("eth_getBalance", serde_json::json!([address, "latest"]))
@@ -138,7 +138,7 @@ impl JsonRpcClient {
         Ok(gas.to())
     }
 
-    /// 最新ブロックの base fee の 2 倍に priority fee を足したものを上限にする。
+    /// The cap is twice the latest block's base fee plus the priority fee.
     pub async fn suggest_fees(&self) -> Result<FeeSuggestion, ChainError> {
         let block: Block = self
             .call("eth_getBlockByNumber", serde_json::json!(["latest", false]))
@@ -162,7 +162,7 @@ impl JsonRpcClient {
             .call("eth_getTransactionReceipt", serde_json::json!([tx_hash]))
             .await
             .or_else(|e| match e {
-                // result が null のときは未採掘
+                // A null result means it is not mined yet
                 ChainError::Unavailable(m) if m.ends_with("empty result") => Ok(None),
                 e => Err(e),
             })?;
@@ -254,7 +254,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn connection_errors_do_not_leak_the_url() {
-        // 到達できないアドレス。URL にキーが含まれていても、エラー文には出ない
+        // An unreachable address. Even if the URL contains a key, it does not appear in the error
         let url = SecretString::from("http://127.0.0.1:9/v2/SECRET-KEY-123");
         let err = JsonRpcClient::connect(url, 84532).await.err().unwrap();
         assert!(!err.to_string().contains("SECRET-KEY-123"), "{err}");

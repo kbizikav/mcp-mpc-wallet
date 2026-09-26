@@ -1,6 +1,6 @@
-//! 開発用のソフトウェアパスキー。本物の認証器と同じ形式の assertion を作る。
+//! Development software passkey. Produces assertions in the same format as a real authenticator.
 //!
-//! 秘密鍵をファイルに置くので、本物のパスキー(ユーザーアプリ)ができるまでの開発・テスト専用。
+//! The private key sits in a file, so this is for development and tests only, until the real passkey (user app) exists.
 
 use alloy_primitives::Bytes;
 use p256::ecdsa::signature::Signer;
@@ -17,7 +17,7 @@ pub struct SoftwarePasskey {
     pub rp_id: String,
     pub origin: String,
     pub credential_id: Bytes,
-    /// P-256 の秘密鍵(32 バイト)
+    /// P-256 private key (32 bytes)
     secret: Bytes,
     pub sign_count: u32,
 }
@@ -40,7 +40,7 @@ impl SoftwarePasskey {
         SigningKey::from_slice(&self.secret).expect("valid P-256 secret")
     }
 
-    /// B に登録する公開情報。
+    /// The public data registered with B.
     pub fn registration(&self) -> RegisteredPasskey {
         RegisteredPasskey {
             credential_id: self.credential_id.clone(),
@@ -54,7 +54,7 @@ impl SoftwarePasskey {
         }
     }
 
-    /// 操作に署名する。呼ぶたびに署名カウンタが 1 増える。
+    /// Sign an operation. The signature counter goes up by one on every call.
     pub fn sign(&mut self, operation: UserOperation) -> SignedUserOperation {
         self.sign_count += 1;
         let client_data_json = serde_json::to_vec(&serde_json::json!({
@@ -120,7 +120,7 @@ mod tests {
         let signed = passkey.sign(set_policy(1));
         registered.sign_count = verifier().verify(&registered, &signed).unwrap();
         assert_eq!(registered.sign_count, 1);
-        // 同じ assertion の再送はカウンタで弾かれる
+        // A replayed assertion is caught by the counter
         assert_eq!(
             verifier().verify(&registered, &signed).unwrap_err(),
             PasskeyError::CounterNotIncreased
@@ -177,7 +177,7 @@ mod tests {
             request_id: B256::ZERO,
         });
         let mut auth = signed.assertion.authenticator_data.to_vec();
-        auth[32] = 0x01; // UP のみ
+        auth[32] = 0x01; // UP only
         signed.assertion.authenticator_data = auth.into();
         assert_eq!(
             verifier().verify(&registered, &signed).unwrap_err(),
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn accepts_each_allowed_relying_party_with_its_own_rp_id() {
-        // ブラウザ(localhost)の形式でも、同じ検証器で通る
+        // The browser (localhost) format passes the same verifier
         let mut browser = SoftwarePasskey::generate("localhost", "http://localhost:8787");
         let registered = browser.registration();
         assert!(
@@ -196,7 +196,7 @@ mod tests {
                 .is_ok()
         );
 
-        // origin と RP ID の組が合わないものは通らない
+        // A mismatched pair of origin and RP ID does not pass
         let mut mixed = SoftwarePasskey::generate(RP, "http://localhost:8787");
         let registered = mixed.registration();
         assert_eq!(

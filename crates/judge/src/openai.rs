@@ -1,9 +1,9 @@
-//! OpenAI Responses API(`POST /v1/responses`)による `LlmClient`。
+//! `LlmClient` over the OpenAI Responses API (`POST /v1/responses`).
 //!
-//! 固定の指示は `instructions` に、データ領域は user メッセージにタグで囲んで入れる。
-//! データ領域は `<` `>` をエスケープ済みなので、タグの外に出ることはない。
-//! 出力は JSON schema(strict)で縛る。完了していない応答や拒否はエラーとして返し、
-//! 呼び出し側で fail closed に扱う。
+//! The fixed instructions go into `instructions`; the data section goes into the user message, wrapped in tags.
+//! `<` and `>` in the data section are escaped, so it can never break out of the tags.
+//! The output is constrained by a JSON schema (strict). Incomplete responses and refusals are returned as errors,
+//! which the caller treats as fail closed.
 
 use std::time::Duration;
 
@@ -18,7 +18,7 @@ const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
 pub struct OpenAiConfig {
     pub api_key: SecretString,
-    /// 日付つきのスナップショットで固定する(例: "gpt-5.5-2026-04-23")
+    /// Pinned to a dated snapshot (for example "gpt-5.5-2026-04-23")
     pub model: String,
     pub reasoning_effort: Option<String>,
     pub max_output_tokens: u32,
@@ -107,7 +107,7 @@ struct ContentPart {
     text: Option<String>,
 }
 
-/// 完了した応答から、ただ 1 つの output_text を取り出す。
+/// Extract the single output_text from a completed response.
 fn extract_text(body: &[u8], expected_model: &str) -> Result<String, LlmError> {
     let response: Response = serde_json::from_slice(body)
         .map_err(|e| LlmError::Api(format!("invalid response: {e}")))?;
@@ -242,7 +242,7 @@ mod tests {
         let text = body["input"][0]["content"][0]["text"].as_str().unwrap();
         assert_eq!(text.matches("</transaction_data>").count(), 1);
         assert!(text.ends_with("</transaction_data>"));
-        // API キーはリクエスト本文に入らない
+        // The API key is not in the request body
         assert!(!body.to_string().contains("sk-test"));
     }
 }

@@ -2,10 +2,10 @@ use alloy_primitives::B256;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-/// ドメイン分離付きで値の SHA-256 を取る。
+/// SHA-256 of a value with domain separation.
 ///
-/// serde_json のシリアライズ結果をハッシュするので、ハッシュ対象の型には
-/// `HashMap` のような順序が定まらないコンテナを入れないこと。
+/// It hashes the serde_json serialization, so the hashed types must not contain containers
+/// with an unspecified order such as `HashMap`.
 pub fn canonical_hash<T: Serialize + ?Sized>(domain: &str, value: &T) -> B256 {
     let body = serde_json::to_vec(value).expect("serializing to Vec<u8> does not fail");
     let mut hasher = Sha256::new();

@@ -1,7 +1,7 @@
-//! cggmp21 の鍵生成・aux info 生成・presign と、署名の変換。
+//! cggmp21 key generation, aux info generation and presigning, and signature conversion.
 //!
-//! パーティの番号は鍵生成時に A = 0、B = 1、C = 2 に固定する。
-//! presignature は承認後に毎回新しく作り、1 回だけ使って捨てる(再利用は鍵漏洩につながる)。
+//! Party indices are fixed at key generation: A = 0, B = 1, C = 2.
+//! A fresh presignature is made after every approval, used once and discarded (reuse leaks the key).
 
 use alloy_primitives::{Address, B256, Signature, U256, keccak256};
 use cggmp21::generic_ec::{NonZero, Point, Scalar};
@@ -17,7 +17,7 @@ pub type IncompleteKeyShare = cggmp21::IncompleteKeyShare<Curve>;
 pub type AuxInfo = cggmp21::key_share::AuxInfo<SecurityLevel128>;
 pub type PregeneratedPrimes = cggmp21::PregeneratedPrimes<SecurityLevel128>;
 pub type Presignature = cggmp21::Presignature<Curve>;
-/// 部分署名。A は自分のものを B にだけ送る
+/// A partial signature. A sends its own only to B
 pub type PartialSignature = cggmp21::PartialSignature<Curve>;
 
 pub const PARTY_A: u16 = 0;
@@ -25,17 +25,17 @@ pub const PARTY_B: u16 = 1;
 pub const PARTY_C: u16 = 2;
 pub const PARTIES: u16 = 3;
 pub const THRESHOLD: u16 = 2;
-/// 通常の署名は A と B で行う。signer index 0 = A、1 = B
+/// Normal signing is done by A and B. Signer index 0 = A, 1 = B
 pub const SIGNERS_AB: [u16; 2] = [PARTY_A, PARTY_B];
 
-/// B と、相手(A または C)で署名するときの署名者の組(鍵生成時の番号の昇順)。
+/// The signer set when B signs with a peer (A or C), in ascending order of key generation indices.
 pub fn signers_with_b(cosigner: u16) -> [u16; 2] {
     let mut signers = [cosigner, PARTY_B];
     signers.sort_unstable();
     signers
 }
 
-/// `signers` の中での `party` の位置(signer index)。
+/// The position (signer index) of `party` within `signers`.
 pub fn signer_index(signers: &[u16], party: u16) -> Option<u16> {
     signers
         .iter()
@@ -55,7 +55,7 @@ pub enum ProtocolError {
     InvalidShare(String),
 }
 
-/// 実行ごとに一意な ID。フェーズごとにドメインを分ける。
+/// A unique ID per execution. Each phase gets its own domain.
 pub fn execution_id(session: &[u8; 32], phase: &str) -> Vec<u8> {
     let mut id = b"mcp-mpc-wallet/".to_vec();
     id.extend_from_slice(phase.as_bytes());
@@ -103,7 +103,7 @@ pub fn complete_share(
     KeyShare::from_parts((incomplete, aux)).map_err(|e| ProtocolError::InvalidShare(e.to_string()))
 }
 
-/// presignature を 1 つ作る。`signer_index` は `signers` の中での位置。
+/// Make one presignature. `signer_index` is the position within `signers`.
 pub async fn presign_party<M>(
     eid: &[u8],
     signer_index: u16,
@@ -124,7 +124,7 @@ pub fn data_to_sign(signing_hash: &B256) -> DataToSign<Curve> {
     DataToSign::from_scalar(Scalar::from_be_bytes_mod_order(signing_hash.as_slice()))
 }
 
-/// presignature を消費して、この 1 件の hash にだけ部分署名する。
+/// Consume the presignature and partially sign this one hash only.
 pub fn issue_partial(presig: Presignature, signing_hash: &B256) -> PartialSignature {
     presig.issue_partial_signature(data_to_sign(signing_hash))
 }
@@ -138,7 +138,7 @@ pub fn address_of(public_key: &Point<Curve>) -> Address {
     Address::from_slice(&keccak256(&uncompressed[1..])[12..])
 }
 
-/// 部分署名を合成し、公開鍵で検証してから Ethereum の (r, s, v) にする。
+/// Combine the partial signatures, verify with the public key, and convert to Ethereum's (r, s, v).
 pub fn combine(
     partials: &[PartialSignature],
     signing_hash: &B256,
@@ -158,9 +158,9 @@ pub fn combine(
     })
 }
 
-/// 手元にある 2 つのシェアだけで署名する(緊急時の A+C などの復旧経路用)。
+/// Sign with two shares at hand only (for recovery paths such as the emergency A+C).
 ///
-/// 両方のシェアを同じプロセスに置くので、通常の署名には使わないこと。
+/// Both shares live in the same process, so never use this for normal signing.
 pub async fn sign_with_local_shares(
     shares: [&KeyShare; 2],
     signing_hash: &B256,
@@ -180,7 +180,7 @@ pub async fn sign_with_local_shares(
     let mut session = [0u8; 32];
     OsRng.fill_bytes(&mut session);
     let eid = execution_id(&session, "local-presign");
-    // 相手はいないので、ネットワーク側のチャネルは使わない(送り手は最後まで保持する)
+    // There is no peer, so the network channels are unused (the senders are kept until the end)
     let (net_out, _unused_out) = futures::channel::mpsc::unbounded();
     let (_keep_open, net_in) = futures::channel::mpsc::unbounded();
     let presigs = crate::net::run_parties(2, &[0, 1], net_out, net_in, |i, party| {

@@ -1,4 +1,4 @@
-//! 判定ノード・署名ノード・ユーザーアプリで共有する型。
+//! Types shared by the judge node, the signing node and the user app.
 
 pub mod approval;
 pub mod hash;

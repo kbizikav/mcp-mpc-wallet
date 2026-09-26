@@ -1,7 +1,7 @@
-//! B 側の鍵生成(2-of-3 DKG と aux info 生成)。
+//! Key generation on B's side (2-of-3 DKG and aux info generation).
 //!
-//! 1 本の接続で新しいウォレットを 1 つ作る。A 側のプロセスは A と C のパーティを動かす。
-//! B は 1 つで複数のウォレットのシェアを持てる。
+//! One connection creates one new wallet. The process on A's side runs parties A and C.
+//! A single B can hold shares for several wallets.
 
 use alloy_primitives::B256;
 use mw_mpc::protocol::{
@@ -31,13 +31,13 @@ pub enum KeygenError {
     },
 }
 
-/// 鍵生成の結果。`passkey` は A が新しいウォレットの最初のパスキーとして送ってきたもの。
+/// The result of key generation. `passkey` is what A sent as the new wallet's first passkey.
 pub struct KeygenOutput {
     pub share: KeyShare,
     pub passkey: Option<RegisteredPasskey>,
 }
 
-/// 最初の要求を待ってから鍵生成を行う(`keygen` サブコマンド用)。
+/// Wait for the first request, then run key generation (for the `keygen` subcommand).
 pub async fn run_keygen<S>(
     conn: &mut AConnection<S>,
     attestation: Option<&AttestationService>,
@@ -45,7 +45,7 @@ pub async fn run_keygen<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    // A は鍵生成の前に attestation を確かめる(偽の B とシェアを作らないため)
+    // A checks the attestation before key generation (so it never creates shares with a fake B)
     let session = loop {
         match conn.recv().await? {
             AtoB::Keygen { session, passkey } => break (session, passkey),
@@ -66,9 +66,9 @@ where
     Ok(KeygenOutput { share, passkey })
 }
 
-/// `Keygen` を受け取った後の鍵生成。最後に A とアドレスを突き合わせる。
+/// Key generation after receiving `Keygen`. At the end, the address is checked against A's.
 ///
-/// シェアの封印と `KeygenStored` の送信は呼び出し側で行う。
+/// The caller seals the share and sends `KeygenStored`.
 pub async fn keygen_after_request<S>(
     conn: &mut AConnection<S>,
     session: B256,
@@ -76,7 +76,7 @@ pub async fn keygen_after_request<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    // 素数の生成は重いので、プロトコルを始める前に済ませておく
+    // Prime generation is slow, so do it before the protocol starts
     let primes = tokio::task::spawn_blocking(|| PregeneratedPrimes::generate(&mut OsRng))
         .await
         .map_err(|e| KeygenError::Unexpected(e.to_string()))?;

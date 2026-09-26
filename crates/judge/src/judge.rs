@@ -6,7 +6,7 @@ use crate::{LlmClient, LlmRequest};
 const MAX_REASONS: usize = 16;
 const MAX_TEXT_LEN: usize = 2_000;
 
-/// LLM の出力。スキーマ外のフィールドがあればパース失敗にする。
+/// The LLM's output. Fields outside the schema make parsing fail.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LlmJudgement {
@@ -35,7 +35,7 @@ pub fn parse_judgement(text: &str) -> Result<LlmJudgement, ParseError> {
     Ok(judgement)
 }
 
-/// 1 サンプルの結果。
+/// The result of one sample.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum SampleResult {
@@ -45,7 +45,7 @@ pub enum SampleResult {
 }
 
 impl SampleResult {
-    /// 失敗したサンプルは `NeedsUserConfirmation` として数える。
+    /// A failed sample counts as `NeedsUserConfirmation`.
     pub fn verdict(&self) -> Verdict {
         match self {
             SampleResult::Judged(j) => j.verdict,
@@ -64,7 +64,7 @@ pub struct JudgeOutcome {
 }
 
 impl JudgeOutcome {
-    /// ユーザーに見せる理由(重複を除く)。
+    /// The reasons shown to the user (deduplicated).
     pub fn reasons(&self) -> Vec<String> {
         let mut reasons: Vec<String> = Vec::new();
         for sample in &self.samples {
@@ -85,9 +85,9 @@ impl JudgeOutcome {
     }
 }
 
-/// 同じ問い合わせを `samples` 回投げ、fail closed でまとめる。
+/// Send the same query `samples` times and combine them, failing closed.
 ///
-/// LLM のエラー、パース失敗、サンプル間の不一致は、どれも `Approve` にならない。
+/// An LLM error, a parse failure or disagreement between samples never results in `Approve`.
 pub async fn judge<L: LlmClient>(llm: &L, request: &LlmRequest, samples: usize) -> JudgeOutcome {
     let mut results = Vec::with_capacity(samples);
     for _ in 0..samples {

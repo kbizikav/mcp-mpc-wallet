@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
-//! 判定ノード B のパイプラインが不変条件を守ることを、モックを使って確かめる。
+//! Check with mocks that judge node B's pipeline keeps the invariants.
 
 use alloy_consensus::{SignableTransaction, TxEip1559};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, keccak256};
@@ -189,7 +189,7 @@ async fn approves_signs_and_submits_small_transfer() {
     let tx_hash = keccak256(&sent[0]);
     assert_eq!(outcome, AgentOutcome::Submitted { tx_hash });
 
-    // エージェントに返る値には署名済み tx が含まれない
+    // What the agent gets back never includes the signed tx
     let outcome_json = serde_json::to_string(&outcome).unwrap();
     assert!(!outcome_json.contains(&alloy_primitives::hex::encode(&sent[0])));
 
@@ -226,7 +226,7 @@ async fn rejects_wrong_chain_id() {
         rejected(CoarseReason::InvalidRequest)
     );
 
-    // 提案側の chainId だけ偽っても通らない
+    // Faking only the proposal's chainId does not work
     let mut p = coffee();
     p.chain_id = 1;
     assert_eq!(
@@ -314,7 +314,7 @@ async fn reverting_transaction_rejects() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn simulator_discrepancy_asks_the_user_without_llm() {
-    // tx は BOB に送るのに、シミュレータは別の宛先への送金を報告する
+    // The tx sends to BOB, but the simulator reports a transfer to another recipient
     let lying = report(
         vec![transfer(None, Address::repeat_byte(0xee), ONE_CENT_ETH)],
         vec![],
@@ -455,7 +455,7 @@ async fn repeated_rejects_freeze_the_wallet() {
         .any(|n| matches!(n, UserNotice::Frozen { wallet: w, .. } if w == wallet()));
     assert!(frozen_notice);
 
-    // 凍結後は正しい提案でも処理しない
+    // After freezing, even a valid proposal is not processed
     assert_eq!(
         node.handle_proposal(coffee(), &mut ()).await,
         AgentOutcome::Frozen

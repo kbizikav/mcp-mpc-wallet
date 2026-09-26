@@ -1,7 +1,7 @@
-//! B の待ち受け: TCP(開発用)と vsock(Nitro Enclave の中)。
+//! Where B listens: TCP (development) and vsock (inside a Nitro Enclave).
 //!
-//! Enclave の中では TCP で待ち受けられないので、親インスタンスが TCP を vsock に中継する。
-//! TLS は enclave の中で終端するので、親は暗号文しか見ない。
+//! An enclave cannot listen on TCP, so the parent instance relays TCP to vsock.
+//! TLS terminates inside the enclave, so the parent only sees ciphertext.
 
 use std::io;
 use std::net::SocketAddr;
@@ -12,7 +12,7 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 
-/// `127.0.0.1:7443`、`tcp:127.0.0.1:7443`、`vsock:7443` のいずれか。
+/// One of `127.0.0.1:7443`, `tcp:127.0.0.1:7443` or `vsock:7443`.
 #[derive(Clone, Debug)]
 pub enum Listen {
     Tcp(SocketAddr),
@@ -67,7 +67,7 @@ impl RawListener {
         }
     }
 
-    /// 接続を受け付け、(ストリーム, 相手の表示名) を返す。
+    /// Accept a connection and return (stream, peer display name).
     pub async fn accept(&self) -> io::Result<(RawStream, String)> {
         match self {
             Self::Tcp(listener) => {

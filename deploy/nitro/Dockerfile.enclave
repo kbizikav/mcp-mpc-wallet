@@ -1,7 +1,7 @@
-# 判定ノード B の enclave イメージ。
+# Enclave image for judge node B.
 #
-# kmstool/ には aws-nitro-enclaves-sdk-c で作った kmstool_enclave_cli と libnsm.so を置いておく
-# (build-kmstool.sh)。API キーなどの秘密はイメージに入れない(起動時に親から vsock で渡す)。
+# Put kmstool_enclave_cli and libnsm.so built with aws-nitro-enclaves-sdk-c into kmstool/
+# (build-kmstool.sh). Secrets such as API keys never go into the image (the parent passes them over vsock at startup).
 
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS build
 RUN dnf install -y gcc gcc-c++ make cmake clang git m4 perl diffutils tar gzip xz \

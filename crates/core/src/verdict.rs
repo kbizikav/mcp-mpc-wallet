@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// 判定結果。`Ord` は制限の強さの順(Approve < NeedsUserConfirmation < Reject)。
+/// A judgment. `Ord` orders by strictness (Approve < NeedsUserConfirmation < Reject).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
@@ -10,13 +10,13 @@ pub enum Verdict {
 }
 
 impl Verdict {
-    /// 複数の判定を fail closed で 1 つにまとめる。
+    /// Combine several judgments into one, failing closed.
     ///
-    /// - 空なら `Reject`
-    /// - 全員一致ならその判定
-    /// - 食い違えば、最も強い制限と `NeedsUserConfirmation` のうち強い方
+    /// - Empty: `Reject`
+    /// - Unanimous: that judgment
+    /// - Disagreement: the stricter of the strictest judgment and `NeedsUserConfirmation`
     ///
-    /// `Approve` になるのは、1 つ以上あってすべてが `Approve` のときだけ。
+    /// The result is `Approve` only if there is at least one judgment and all of them are `Approve`.
     pub fn fail_closed(verdicts: impl IntoIterator<Item = Verdict>) -> Verdict {
         let mut iter = verdicts.into_iter();
         let Some(first) = iter.next() else {

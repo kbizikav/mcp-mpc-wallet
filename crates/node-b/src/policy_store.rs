@@ -4,9 +4,9 @@ use std::sync::Mutex;
 use alloy_primitives::Address;
 use mw_core::Policy;
 
-/// ウォレットごとの有効な方針。
+/// The active policy for each wallet.
 ///
-/// 方針はユーザーのパスキー署名を検証できたものだけを登録する(不変条件 6)。
+/// Only policies with a verified passkey signature from the user are registered (invariant 6).
 #[derive(Default)]
 pub struct PolicyStore {
     policies: Mutex<HashMap<Address, Policy>>,
@@ -36,7 +36,7 @@ impl PolicyStore {
             .collect()
     }
 
-    /// 検証済みの方針を登録する。古いバージョンの再送は拒否する。
+    /// Register a verified policy. Replays of older versions are rejected.
     pub(crate) fn install_verified(&self, policy: Policy) -> Result<(), PolicyStoreError> {
         let mut policies = self.policies.lock().expect("policy store poisoned");
         if let Some(current) = policies.get(&policy.wallet)

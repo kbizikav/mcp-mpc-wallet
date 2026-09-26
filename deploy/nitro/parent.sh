@@ -1,11 +1,11 @@
 #!/bin/bash
-# 親インスタンスで enclave を起動する。
+# Start the enclave on the parent instance.
 #
-#   parent.sh start <keygen|serve>   enclave を起動して一式を渡し、中継を始める
-#   parent.sh stop                   enclave と中継を止める
+#   parent.sh start <keygen|serve>   start the enclave, hand over the bundle, and start relaying
+#   parent.sh stop                   stop the enclave and the relays
 #
-# /opt/mw/secrets.env に ALCHEMY_API_KEY、TENDERLY_*、OPENAI_API_KEY、MW_KMS_KEY_ID を置く。
-# /opt/mw/data に tls/(B の証明書と鍵)と、enclave が送ってきた封印済みデータが入る。
+# Put ALCHEMY_API_KEY, TENDERLY_*, OPENAI_API_KEY and MW_KMS_KEY_ID in /opt/mw/secrets.env.
+# /opt/mw/data holds tls/ (B's certificate and key) and the sealed data the enclave sends back.
 set -euo pipefail
 
 MW=/opt/mw
@@ -30,20 +30,20 @@ start() {
     stop
     mkdir -p "$MW/data" "$MW/logs"
 
-    # 外部への中継(許可したホストだけ)
+    # Relays to the outside (allowed hosts only)
     vsock-proxy 8000 kms.$REGION.amazonaws.com 443 --config "$MW/vsock-proxy.yaml" &
     vsock-proxy 8001 base-sepolia.g.alchemy.com 443 --config "$MW/vsock-proxy.yaml" &
     vsock-proxy 8002 api.tenderly.co 443 --config "$MW/vsock-proxy.yaml" &
     vsock-proxy 8003 api.openai.com 443 --config "$MW/vsock-proxy.yaml" &
 
-    # enclave からのデータとログを受け取る
+    # Receive data and logs from the enclave
     socat -u VSOCK-LISTEN:9001,fork,reuseaddr SYSTEM:"tar -x -C $MW/data" &
     socat -u VSOCK-LISTEN:9002,fork,reuseaddr "OPEN:$MW/logs/enclave.log,creat,append" &
 
     nitro-cli run-enclave --eif-path "$MW/mw-node-b.eif" --cpu-count 1 --memory 1400 \
         --enclave-cid "$CID" ${MW_DEBUG:+--debug-mode}
 
-    # 起動時の一式: API キー、ロールの一時資格情報、モード、/data の中身
+    # Startup bundle: API keys, the role's temporary credentials, the mode, and the contents of /data
     local bundle creds
     bundle=$(mktemp -d)
     creds=$(role_credentials)
@@ -65,7 +65,7 @@ start() {
     done
     rm -rf "$bundle"
 
-    # A からの mTLS を enclave に中継する
+    # Relay mTLS from A to the enclave
     socat TCP-LISTEN:7443,fork,reuseaddr VSOCK-CONNECT:$CID:7443 &
     echo "enclave started in $mode mode"
 }

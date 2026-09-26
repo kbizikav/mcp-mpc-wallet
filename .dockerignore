@@ -1,4 +1,4 @@
-# 鍵・API キー・パスキーなどの実行時データをビルドコンテキストに入れない
+# Keep runtime data (keys, API keys, passkeys) out of the build context
 .local
 target
 .git

@@ -1,8 +1,8 @@
-//! ユーザーのパスキー(WebAuthn, ES256)で署名した操作と、その検証。
+//! Operations signed with the user's passkey (WebAuthn, ES256), and their verification.
 //!
-//! B は方針の変更・要確認 tx の承認・凍結の解除を、登録済みのパスキーで署名されたものだけ受け付ける
-//! (不変条件 6)。署名対象(challenge)は操作の正規化ハッシュで、操作の内容に束縛される。
-//! 検証は p256 の ECDSA を使い、暗号プリミティブは実装しない。
+//! B accepts policy changes, approvals of txs needing confirmation, and unfreezing only when signed by the registered passkey
+//! (invariant 6). What is signed (the challenge) is the operation's canonical hash, so it is bound to the operation's contents.
+//! Verification uses p256 ECDSA; no cryptographic primitive is implemented here.
 
 mod operation;
 mod protocol;

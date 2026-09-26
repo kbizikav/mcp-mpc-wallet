@@ -5,13 +5,13 @@ use crate::canonical_hash;
 
 const POLICY_DOMAIN: &str = "mcp-mpc-wallet/policy/v1";
 
-/// ユーザーが登録する方針。B はパスキー署名を検証できたものだけを受け付ける(M5)。
+/// A policy the user registers. B only accepts ones with a verified passkey signature (M5).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Policy {
     pub wallet: Address,
-    /// 単調増加。古い方針の再送を拒否するのに使う
+    /// Monotonically increasing. Used to reject replays of older policies
     pub version: u64,
-    /// ユーザーが自然言語で書いた方針
+    /// The policy the user wrote in natural language
     pub text: String,
 }
 

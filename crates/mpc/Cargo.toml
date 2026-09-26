@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# テスト専用: 1 つの鍵で署名するモック。閾値署名ではないので本番ビルドで有効にしてはいけない
+# Test only: a mock that signs with a single key. It is not threshold signing, so never enable it in production builds
 insecure-test-signer = ["dep:k256"]
 
 [dependencies]

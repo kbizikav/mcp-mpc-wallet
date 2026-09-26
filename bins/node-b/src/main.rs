@@ -1,14 +1,14 @@
-//! 判定ノード B。
+//! Judge node B.
 //!
 //! ```text
-//! mw-node-b pki    --node-b-dir <dir> --node-a-dir <dir>   # デプロイ用の CA と証明書を作る
+//! mw-node-b pki    --node-b-dir <dir> --node-a-dir <dir>   # create the deployment CA and certificates
 //! mw-node-b keygen --listen <tcp:addr|vsock:port> --tls-dir <dir> --data-dir <dir>
-//! mw-node-b register-passkey --data-dir <dir> --passkey <registration.json>   # B を止めて実行
+//! mw-node-b register-passkey --data-dir <dir> --passkey <registration.json>   # run with B stopped
 //! mw-node-b serve  --listen <tcp:addr|vsock:port> --tls-dir <dir> --data-dir <dir>
 //! ```
 //!
-//! TEE なしで動く開発用の構成。B のシェアは `<data-dir>/sealed` に平文で置かれる。
-//! パスキー・方針・凍結状態は `<data-dir>/user-state.json` に保存する。
+//! Development setup without a TEE. B's share is stored in plaintext under `<data-dir>/sealed`.
+//! The passkey, policies and freeze state are stored in `<data-dir>/user-state.json`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -58,14 +58,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// デプロイ用の CA を作り、B と A の証明書を発行する(CA の鍵は捨てる)
+    /// Create the deployment CA and issue B's and A's certificates (the CA key is discarded)
     Pki {
         #[arg(long)]
         node_b_dir: PathBuf,
         #[arg(long)]
         node_a_dir: PathBuf,
     },
-    /// A からの接続を 1 本受け付けて 2-of-3 の鍵生成を行う
+    /// Accept one connection from A and run 2-of-3 key generation
     Keygen {
         #[arg(long)]
         listen: Listen,
@@ -75,24 +75,24 @@ enum Command {
         data_dir: PathBuf,
         #[command(flatten)]
         seal: SealArgs,
-        /// TLS 証明書を enclave の中で作り、attestation で証明する(Nitro Enclave 用)
+        /// Create the TLS certificate inside the enclave and prove it with attestation (for Nitro Enclaves)
         #[arg(long)]
         enclave_tls: bool,
     },
-    /// ユーザーのパスキーを登録する(初回だけ。B を止めた状態で実行する)
+    /// Register the user's passkey (first time only, with B stopped)
     RegisterPasskey {
         #[arg(long)]
         data_dir: PathBuf,
-        /// 対象のウォレット(B が 1 つしか持たなければ省略できる)
+        /// The wallet (may be omitted if B holds only one)
         #[arg(long)]
         wallet: Option<Address>,
         #[command(flatten)]
         seal: SealArgs,
-        /// パスキーの公開情報(credential_id, public_key)の JSON
+        /// JSON with the passkey's public data (credential_id, public_key)
         #[arg(long)]
         passkey: PathBuf,
     },
-    /// 提案とユーザー操作を受け付けて判定・署名・送信する
+    /// Accept proposals and user operations; judge, sign and send
     Serve {
         #[arg(long)]
         listen: Listen,
@@ -100,12 +100,12 @@ enum Command {
         tls_dir: PathBuf,
         #[arg(long)]
         data_dir: PathBuf,
-        /// 受け付けるパスキーの RP(`<rp_id>=<origin>`)。何回でも指定できる
+        /// A passkey RP to accept (`<rp_id>=<origin>`). May be repeated
         #[arg(long = "passkey-rp", default_values_t = default_rps())]
         passkey_rps: Vec<RelyingParty>,
         #[command(flatten)]
         seal: SealArgs,
-        /// TLS 証明書を enclave の中で作り、attestation で証明する(Nitro Enclave 用)
+        /// Create the TLS certificate inside the enclave and prove it with attestation (for Nitro Enclaves)
         #[arg(long)]
         enclave_tls: bool,
     },
@@ -122,22 +122,22 @@ fn acceptor(tls_dir: &Path) -> anyhow::Result<TlsAcceptor> {
     Ok(TlsAcceptor::from(config))
 }
 
-/// B のシェアの封印方法。`--kms-key-id` を指定すると Nitro Enclave の中で KMS を使う。
+/// How B's share is sealed. With `--kms-key-id`, KMS is used inside a Nitro Enclave.
 #[derive(clap::Args, Clone)]
 struct SealArgs {
-    /// KMS キー(指定しなければ開発用に平文ファイルで保存する)
+    /// KMS key (without it, the share is stored in a plaintext file for development)
     #[arg(long)]
     kms_key_id: Option<String>,
     #[arg(long, default_value = "ap-northeast-1")]
     kms_region: String,
     #[arg(long, default_value = "/app/kmstool_enclave_cli")]
     kmstool: PathBuf,
-    /// 親インスタンスで KMS への vsock-proxy が待つポート
+    /// Port of the vsock-proxy to KMS on the parent instance
     #[arg(long, default_value_t = 8000)]
     kms_proxy_port: u16,
 }
 
-/// TLS の設定と、enclave なら attestation の発行元。
+/// TLS settings and, in an enclave, the attestation issuer.
 fn tls_setup(
     tls_dir: &Path,
     enclave_tls: bool,
@@ -193,7 +193,7 @@ fn env_var(name: &str) -> anyhow::Result<String> {
     std::env::var(name).with_context(|| format!("{name} is not set"))
 }
 
-/// A からの接続を 1 本受け付けて、新しいウォレットを 1 つ作る。
+/// Accept one connection from A and create one new wallet.
 async fn keygen(
     listen: Listen,
     tls_dir: &Path,
@@ -233,7 +233,7 @@ fn load_user_state(data_dir: &Path) -> anyhow::Result<UserStateSnapshot> {
     }
 }
 
-/// 一時ファイルに書いてから置き換えるので、書きかけの状態は残らない。
+/// Writes to a temporary file and then renames it, so a half-written state is never left behind.
 fn save_user_state(data_dir: &Path, state: &UserStateSnapshot) -> anyhow::Result<()> {
     static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = SAVE_LOCK.lock().expect("save lock poisoned");

@@ -1,11 +1,11 @@
-//! 署名ノード A。
+//! Signing node A.
 //!
 //! ```text
 //! mw-node-a keygen  --node-b <addr> --tls-dir <dir> --data-dir <dir> [--passphrase-file <path>]
 //! mw-node-a info    --data-dir <dir>
 //! mw-node-a propose --node-b <addr> --tls-dir <dir> --data-dir <dir> --to <addr> [--value-wei N] [--data 0x..] --note <text>
 //! mw-node-a resume  --node-b <addr> --tls-dir <dir> --data-dir <dir> --request-id <id> [--wait]
-//! mw-node-a mcp     --node-b <addr> --tls-dir <dir> --data-dir <dir>   # stdio の MCP サーバ
+//! mw-node-a mcp     --node-b <addr> --tls-dir <dir> --data-dir <dir>   # MCP server over stdio
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -37,36 +37,36 @@ struct Cli {
 
 #[derive(clap::Args)]
 struct Conn {
-    /// 判定ノード B のアドレス(host:port)
+    /// Address of judge node B (host:port)
     #[arg(long)]
     node_b: String,
     #[arg(long)]
     tls_dir: PathBuf,
     #[arg(long)]
     data_dir: PathBuf,
-    /// B が Nitro Enclave で動くとき、期待するイメージの PCR0(16 進)。指定すると attestation を検証する
+    /// When B runs in a Nitro Enclave, the expected image PCR0 (hex). If set, the attestation is verified
     #[arg(long)]
     expected_pcr0: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// B と 2-of-3 の鍵生成を行い、シェア A と暗号化したシェア C を保存する
+    /// Run 2-of-3 key generation with B and store share A and the encrypted share C
     ///
-    /// シェア C を暗号化するパスフレーズは `--passphrase-file` の 1 行目か、
-    /// 環境変数 MW_RECOVERY_PASSPHRASE から読む。
+    /// The passphrase that encrypts share C is read from the first line of `--passphrase-file`,
+    /// or from the environment variable MW_RECOVERY_PASSPHRASE.
     Keygen {
         #[command(flatten)]
         conn: Conn,
         #[arg(long)]
         passphrase_file: Option<PathBuf>,
     },
-    /// ウォレットのアドレスを表示する
+    /// Print the wallet address
     Info {
         #[arg(long)]
         data_dir: PathBuf,
     },
-    /// tx を 1 件提案する(動作確認用)
+    /// Propose one tx (for manual testing)
     Propose {
         #[command(flatten)]
         conn: Conn,
@@ -78,11 +78,11 @@ enum Command {
         data: Option<String>,
         #[arg(long)]
         note: String,
-        /// 採掘まで待つ
+        /// Wait until it is mined
         #[arg(long)]
         wait: bool,
     },
-    /// ユーザーが承認した要求の署名・送信を再開する(動作確認用)
+    /// Resume signing and sending a request the user approved (for manual testing)
     Resume {
         #[command(flatten)]
         conn: Conn,
@@ -91,7 +91,7 @@ enum Command {
         #[arg(long)]
         wait: bool,
     },
-    /// エージェント向けの MCP サーバを stdio で動かす
+    /// Run the MCP server for the agent over stdio
     Mcp {
         #[command(flatten)]
         conn: Conn,
@@ -197,7 +197,7 @@ async fn run_resume(
     report(&config, outcome, wait).await
 }
 
-/// 結果を表示し、`wait` なら採掘まで待つ。
+/// Print the outcome, and with `wait`, wait until it is mined.
 async fn report(config: &WalletConfig, outcome: AgentOutcome, wait: bool) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string(&outcome)?);
     if let (true, AgentOutcome::Submitted { tx_hash }) = (wait, &outcome) {

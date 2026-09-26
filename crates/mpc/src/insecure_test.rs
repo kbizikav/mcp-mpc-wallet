@@ -1,4 +1,4 @@
-//! テスト専用: 1 つの鍵で署名するモック。閾値署名ではない。
+//! Test only: a mock that signs with a single key. It is not threshold signing.
 
 use alloy_primitives::{Address, Signature, U256};
 use k256::ecdsa::SigningKey;
@@ -16,7 +16,7 @@ impl InsecureSingleKeySigner {
         Self::from_key(SigningKey::random(&mut rand_core::OsRng))
     }
 
-    /// 決まった鍵から作る(テストでアドレスを事前に知りたいとき用)。
+    /// Build from a fixed key (for tests that need to know the address in advance).
     pub fn from_secret_bytes(bytes: &[u8; 32]) -> Self {
         Self::from_key(SigningKey::from_slice(bytes).expect("valid secp256k1 scalar"))
     }

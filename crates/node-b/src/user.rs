@@ -1,10 +1,10 @@
-//! ユーザー操作(パスキー署名つき)と、ユーザーが承認した要求の再開。
+//! User operations (signed with the passkey) and resuming requests the user approved.
 //!
-//! - 方針の変更、要確認 tx の承認、凍結の解除、保留一覧の閲覧は、登録済みのパスキーの署名が必要
-//!   (不変条件 6)。署名カウンタを保存して、同じ assertion の再送を拒否する。
-//! - ユーザーが承認した tx も、承認時点で nonce を確かめ、承認から 5 分以内に
-//!   A が再開したときにだけ署名する(不変条件 3, 4)。
-//! - A の端末をなくしたときは、パスキーで承認した復旧 tx を B+C で署名する。
+//! - Changing the policy, approving txs that need confirmation, unfreezing and viewing pending requests need a
+//!   signature from the registered passkey (invariant 6). The signature counter is stored so the same assertion cannot be replayed.
+//! - A tx the user approved is signed only if its nonce checks out at approval time and A resumes it
+//!   within 5 minutes of the approval (invariants 3, 4).
+//! - When A's device is lost, a recovery tx approved with the passkey is signed by B+C.
 
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use mw_audit::{AuditRecord, AuditSink};
@@ -27,7 +27,7 @@ use crate::notify::{UserNotice, UserNotifier};
 use crate::pipeline::{PENDING_TTL_SECS, Payload, Prepared};
 use crate::{Clock, JudgeNode};
 
-/// 永続化するユーザー関連の状態。
+/// Persisted user-related state.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserStateSnapshot {
     pub passkeys: Vec<(Address, RegisteredPasskey)>,
@@ -77,9 +77,9 @@ where
     K: Clock,
     A: AuditSink,
 {
-    /// ユーザーのパスキーを登録する。まだ登録がないときだけ(初回の信頼)。
+    /// Register the user's passkey. Only when none is registered yet (trust on first use).
     ///
-    /// 差し替えは、今のパスキーで署名した `RotatePasskey` でだけできる。
+    /// Rotation is possible only with a `RotatePasskey` signed by the current passkey.
     pub fn register_passkey(
         &self,
         wallet: Address,
@@ -110,7 +110,7 @@ where
         }
     }
 
-    /// B 自身が保存した状態から復元する(起動時)。
+    /// Restore from the state B itself saved (at startup).
     pub fn restore(&self, snapshot: &UserStateSnapshot) -> Result<(), UserError> {
         let mut passkeys = self.passkeys.lock().expect("passkeys poisoned");
         for (wallet, key) in &snapshot.passkeys {
@@ -126,7 +126,7 @@ where
         Ok(())
     }
 
-    /// ユーザーアプリからの要求を処理する。
+    /// Handle a request from the user app.
     pub async fn handle_user_request(&self, request: UserRequest) -> UserResponse {
         let result = match request {
             UserRequest::Signed { signed } => self.signed_operation(signed).await,
@@ -178,7 +178,7 @@ where
         Ok(UserResponse::RequestRejected { request_id })
     }
 
-    /// パスキーの署名を検証し、署名カウンタを進める。
+    /// Verify the passkey signature and advance the signature counter.
     fn verify_passkey(&self, signed: &SignedUserOperation) -> Result<(), UserError> {
         let wallet = self.checked_wallet(signed.operation.wallet())?;
         let verifier = PasskeyVerifier {
@@ -195,7 +195,7 @@ where
         signed: SignedUserOperation,
     ) -> Result<UserResponse, UserError> {
         let _serial = self.serial.lock().await;
-        // 署名カウンタを進める前に、この経路で扱う操作かを確かめる
+        // Before advancing the signature counter, check that this path handles the operation
         if let UserOperation::ApproveRecovery { .. } = signed.operation {
             return Err(UserError::WrongFlow);
         }
@@ -247,9 +247,9 @@ where
         }
     }
 
-    /// A の端末をなくしたときの復旧。パスキーで承認された tx を、`peer`(C)と署名して送信する。
+    /// Recovery when A's device is lost. Signs a passkey-approved tx with `peer` (C) and sends it.
     ///
-    /// 凍結中でも使える(緊急時には先に凍結しているはずなので)。
+    /// Works even while frozen (in an emergency, the wallet should already be frozen).
     pub async fn recover(
         &self,
         signed: SignedUserOperation,
@@ -324,7 +324,7 @@ where
         self.report_submission(wallet, signing_hash, result)
     }
 
-    /// このウォレットの直近の出来事(新しい順)。
+    /// Recent events for this wallet (newest first).
     fn activity_views(&self, wallet: Address) -> Vec<ActivityView> {
         self.activity
             .lock()
@@ -358,7 +358,7 @@ where
         views
     }
 
-    /// ユーザーの承認を登録する。nonce が進んでいたら要求を捨てる。
+    /// Register the user's approval. If the nonce has moved on, drop the request.
     async fn approve_pending(&self, wallet: Address, request_id: B256) -> Result<(), UserError> {
         let now = self.parts.clock.now_unix();
         let (key, input_summary) = {
@@ -378,7 +378,7 @@ where
         }
 
         let (witness, pending_nonce) = self.time_and_nonce(wallet).await?;
-        // typed data にはアカウントの nonce がないので、tx のときだけ確かめる
+        // Typed data has no account nonce, so this is checked for txs only
         if key.kind == SigningKind::Transaction && pending_nonce != key.nonce {
             self.pending
                 .lock()
@@ -412,9 +412,9 @@ where
         Ok(())
     }
 
-    /// ユーザーが承認した要求を、A と署名して送信する。
+    /// Sign a request the user approved together with A, and send it.
     ///
-    /// まだ承認されていなければ `PendingUserConfirmation` を返す。
+    /// If it is not approved yet, returns `PendingUserConfirmation`.
     pub async fn resume(
         &self,
         wallet: Address,

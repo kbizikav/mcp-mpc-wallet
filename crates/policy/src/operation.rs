@@ -6,21 +6,21 @@ use crate::{PasskeyAssertion, RegisteredPasskey};
 
 const OPERATION_DOMAIN: &str = "mcp-mpc-wallet/user-operation/v1";
 
-/// パスキーでの署名が必要なユーザー操作。どれも再送(リプレイ)できない形にしてある。
+/// User operations that need a passkey signature. Each one is shaped so it cannot be replayed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum UserOperation {
-    /// 方針の登録・変更。`policy.version` は単調増加
+    /// Set or change the policy. `policy.version` increases monotonically
     SetPolicy { policy: Policy },
-    /// 要確認の tx を承認する。保留中の要求は一度しか承認できない
+    /// Approve a tx that needs confirmation. A pending request can be approved only once
     ApproveRequest { wallet: Address, request_id: B256 },
-    /// 凍結を解除する。`freeze_epoch` は凍結のたびに増えるので、古い解除は使い回せない
+    /// Unfreeze. `freeze_epoch` increases on every freeze, so an old unfreeze cannot be reused
     Unfreeze { wallet: Address, freeze_epoch: u64 },
-    /// 保留中の要求の詳細を見る。`issued_at` が古すぎるものは受け付けない
+    /// View the details of pending requests. Ones whose `issued_at` is too old are not accepted
     ListPending { wallet: Address, issued_at: u64 },
-    /// A をなくしたときに、B+C で署名する復旧 tx を承認する(tx の signing hash に束縛)
+    /// When A is lost, approve a recovery tx that B+C sign (bound to the tx's signing hash)
     ApproveRecovery { wallet: Address, signing_hash: B256 },
-    /// パスキーを差し替える。今のパスキーで署名する
+    /// Rotate the passkey. Signed with the current passkey
     RotatePasskey {
         wallet: Address,
         new_passkey: RegisteredPasskey,
@@ -39,7 +39,7 @@ impl UserOperation {
         }
     }
 
-    /// パスキーに署名させる challenge。
+    /// The challenge the passkey signs.
     pub fn challenge(&self) -> B256 {
         canonical_hash(OPERATION_DOMAIN, self)
     }

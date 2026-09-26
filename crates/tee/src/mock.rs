@@ -1,4 +1,4 @@
-//! TEE なしで動かすためのモック。秘密を守らないので開発・テスト専用。
+//! Mocks for running without a TEE. They do not protect secrets, so development and tests only.
 
 use std::collections::HashMap;
 use std::io;
@@ -16,7 +16,7 @@ use crate::{
 
 const MOCK_FORMAT: &str = "insecure-mock";
 
-/// メモリに平文で置くだけの SealedStorage。
+/// A SealedStorage that just keeps plaintext in memory.
 #[derive(Default)]
 pub struct InsecureMemoryStorage {
     secrets: Mutex<HashMap<String, Vec<u8>>>,
@@ -59,9 +59,9 @@ impl SealedStorage for InsecureMemoryStorage {
     }
 }
 
-/// ファイルに平文で置く SealedStorage(TEE なしで B を動かす開発用)。
+/// A SealedStorage that keeps plaintext in files (for running B without a TEE in development).
 ///
-/// ファイルは所有者だけが読める権限で作る。秘密は守られないので本番で使ってはいけない。
+/// Files are created readable by the owner only. Secrets are not protected, so never use it in production.
 pub struct InsecureFileStorage {
     dir: std::path::PathBuf,
 }
@@ -123,7 +123,7 @@ struct MockDocument {
     user_data: Vec<u8>,
 }
 
-/// 署名なしの attestation document を発行する。
+/// Issues an unsigned attestation document.
 pub struct InsecureMockAttestor {
     pub pcrs: Vec<Vec<u8>>,
 }
@@ -142,7 +142,7 @@ impl Attestor for InsecureMockAttestor {
     }
 }
 
-/// モックの document を、測定値の一致だけで受け入れる検証器。
+/// A verifier that accepts mock documents on matching measurements alone.
 pub struct InsecureMockVerifier;
 
 impl AttestationVerifier for InsecureMockVerifier {
@@ -171,7 +171,7 @@ impl AttestationVerifier for InsecureMockVerifier {
 
 const DUPLEX_BUFFER: usize = 64 * 1024;
 
-/// プロセス内でつながる Connector / Listener の組を作る。
+/// Create a pair of Connector / Listener connected within the process.
 pub fn in_memory_transport() -> (InMemoryConnector, InMemoryListener) {
     let (tx, rx) = mpsc::channel(16);
     (

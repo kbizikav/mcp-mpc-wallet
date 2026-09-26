@@ -1,11 +1,11 @@
-//! 開発用のユーザーアプリ。ソフトウェアパスキーで操作に署名し、B に送る。
+//! Development user app. Signs operations with a software passkey and sends them to B.
 //!
-//! 本物のパスキー(WebAuthn)を使うユーザーアプリができるまでの代わり。
-//! パスキーの秘密鍵をファイルに置くので、エージェントと同じ PC で使う場合は
-//! エージェントから読めない場所に置くこと。
+//! A stand-in until the user app with a real passkey (WebAuthn) exists.
+//! The passkey's private key sits in a file, so when used on the same machine as the agent,
+//! keep it somewhere the agent cannot read.
 //!
 //! ```text
-//! mw-user passkey-new --passkey <file>          # <file>.pub.json を B に登録する
+//! mw-user passkey-new --passkey <file>          # register <file>.pub.json with B
 //! mw-user status      --node-b .. --tls-dir .. --wallet <addr>
 //! mw-user set-policy  --node-b .. --tls-dir .. --wallet <addr> --passkey <file> --text-file <policy.txt>
 //! mw-user pending     --node-b .. --tls-dir .. --wallet <addr> --passkey <file>
@@ -14,10 +14,10 @@
 //! mw-user freeze      --node-b .. --tls-dir .. --wallet <addr>
 //! mw-user unfreeze    --node-b .. --tls-dir .. --wallet <addr> --passkey <file>
 //!
-//! # 復旧(全額を移す。--yes が必要)
+//! # Recovery (moves all funds; needs --yes)
 //! mw-user recover            --node-b .. --tls-dir .. --wallet <addr> --passkey <file> \
 //!                            --share-dir <dir> --passphrase-file <file> --to <addr> --yes   # B+C
-//! mw-user emergency-withdraw --share-dir <dir> --passphrase-file <file> --to <addr> --yes   # A+C(B なし)
+//! mw-user emergency-withdraw --share-dir <dir> --passphrase-file <file> --to <addr> --yes   # A+C (without B)
 //! ```
 
 use std::io::Write;
@@ -50,12 +50,12 @@ struct Cli {
 struct Target {
     #[arg(long)]
     node_b: String,
-    /// B に接続するためのクライアント証明書のディレクトリ
+    /// Directory with the client certificate for connecting to B
     #[arg(long)]
     tls_dir: PathBuf,
     #[arg(long)]
     wallet: Address,
-    /// B が Nitro Enclave で動くとき、期待するイメージの PCR0(16 進)
+    /// When B runs in a Nitro Enclave, the expected image PCR0 (hex)
     #[arg(long)]
     expected_pcr0: Option<String>,
 }
@@ -72,7 +72,7 @@ impl Target {
 
 #[derive(Subcommand)]
 enum Command {
-    /// ソフトウェアパスキーを作る
+    /// Create a software passkey
     PasskeyNew {
         #[arg(long)]
         passkey: PathBuf,
@@ -85,7 +85,7 @@ enum Command {
         #[command(flatten)]
         target: Target,
     },
-    /// 方針を登録・変更する(バージョンは現在の次)
+    /// Set or change the policy (the version is the current one plus one)
     SetPolicy {
         #[command(flatten)]
         target: Target,
@@ -94,7 +94,7 @@ enum Command {
         #[arg(long)]
         text_file: PathBuf,
     },
-    /// 保留中の要求の詳細を見る
+    /// Show the details of pending requests
     Pending {
         #[command(flatten)]
         target: Target,
@@ -125,17 +125,17 @@ enum Command {
         #[arg(long)]
         passkey: PathBuf,
     },
-    /// パスキーを差し替える(今のパスキーで署名する)
+    /// Rotate the passkey (signed with the current passkey)
     RotatePasskey {
         #[command(flatten)]
         target: Target,
         #[arg(long)]
         passkey: PathBuf,
-        /// 新しいパスキーのファイル(`passkey-new` で作る)
+        /// The new passkey file (created with `passkey-new`)
         #[arg(long)]
         new_passkey: PathBuf,
     },
-    /// A をなくしたとき: C のシェアとパスキーで B と署名し、全額を `to` に移す
+    /// When A is lost: sign with B using share C and the passkey, and move all funds to `to`
     Recover {
         #[command(flatten)]
         target: Target,
@@ -144,7 +144,7 @@ enum Command {
         #[command(flatten)]
         recovery: Recovery,
     },
-    /// B が止まったとき: A と C のシェアだけで署名し、全額を `to` に移す(B の判定を通らない)
+    /// When B is down: sign with shares A and C only, and move all funds to `to` (bypasses B's judgment)
     EmergencyWithdraw {
         #[command(flatten)]
         recovery: Recovery,
@@ -153,15 +153,15 @@ enum Command {
 
 #[derive(clap::Args)]
 struct Recovery {
-    /// share-a.json と share-c.age のあるディレクトリ
+    /// Directory with share-a.json and share-c.age
     #[arg(long)]
     share_dir: PathBuf,
     #[arg(long)]
     passphrase_file: PathBuf,
-    /// 移し先(EOA)
+    /// Destination (an EOA)
     #[arg(long)]
     to: Address,
-    /// 全額を移すことに同意する
+    /// Agree to move all funds
     #[arg(long)]
     yes: bool,
 }
@@ -197,7 +197,7 @@ fn load_passkey(path: &Path) -> anyhow::Result<SoftwarePasskey> {
         .context("malformed passkey file")
 }
 
-/// 署名カウンタが進んだパスキーを、送る前に保存し直す。
+/// Save the passkey, whose signature counter moved, before sending.
 fn save_passkey(path: &Path, passkey: &SoftwarePasskey) -> anyhow::Result<()> {
     let tmp = path.with_extension("tmp");
     let mut options = std::fs::OpenOptions::new();

@@ -1,8 +1,8 @@
-//! A と B をつないだエンドツーエンドのテスト(チェーン・シミュレータ・LLM はモック)。
+//! End-to-end tests with A and B connected (the chain, simulator and LLM are mocked).
 //!
-//! 1. mTLS 越しに 2-of-3 の鍵生成(A 側は A と C、B 側は B)
-//! 2. A の提案 → B の判定 → A+B の閾値署名 → B が送信
-//! 3. B から A に流れたバイト列に、最終署名が一度も現れないこと
+//! 1. 2-of-3 key generation over mTLS (A's side runs A and C, B's side runs B)
+//! 2. A proposes → B judges → A+B threshold-sign → B sends
+//! 3. The final signature never appears in the bytes that flowed from B to A
 
 #![allow(clippy::unwrap_used)]
 
@@ -45,7 +45,7 @@ const BLOCK: BlockInfo = BlockInfo {
 const BOB: Address = Address::repeat_byte(0xb0);
 const AMOUNT: u64 = 10_000_000_000_000_000;
 
-/// 読んだバイト列をすべて記録するストリーム。
+/// A stream that records every byte it reads.
 struct Tap {
     inner: DuplexStream,
     seen: Arc<Mutex<Vec<u8>>>,
@@ -81,7 +81,7 @@ impl AsyncWrite for Tap {
     }
 }
 
-/// mTLS で鍵生成を行い、(A, C, B) のシェアを返す。
+/// Run key generation over mTLS and return the (A, C, B) shares.
 async fn keygen_over_tls() -> (KeyShare, KeyShare, KeyShare) {
     let pki = generate_pki().unwrap();
     let server = server_config(&pki.ca_pem, &pki.node_b_cert_pem, &pki.node_b_key_pem).unwrap();
@@ -159,7 +159,7 @@ fn node_with(share_b: KeyShare, verdicts: &str, with_policy: bool) -> Node {
     node
 }
 
-/// `wallet` から BOB へ AMOUNT を送るシミュレーション結果。
+/// Simulation result for sending AMOUNT from `wallet` to BOB.
 fn transfer_report(wallet: Address) -> SimulationReport {
     SimulationReport {
         success: true,
@@ -201,7 +201,7 @@ fn proposal(wallet: Address) -> Proposal {
     }
 }
 
-/// 提案を 1 件流し、(結果, B→A のバイト列) を返す。
+/// Run one proposal and return (outcome, bytes from B to A).
 async fn run_proposal(node: &Node, share_a: &KeyShare, p: Proposal) -> (AgentOutcome, Vec<u8>) {
     let (a_io, b_io) = tokio::io::duplex(1 << 20);
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -226,7 +226,7 @@ async fn run_proposal(node: &Node, share_a: &KeyShare, p: Proposal) -> (AgentOut
 async fn keygen_propose_sign_and_submit() {
     let (share_a, share_c, share_b) = keygen_over_tls().await;
 
-    // シェア C はパスフレーズで暗号化して保存し、同じパスフレーズでだけ戻せる
+    // Share C is stored encrypted with a passphrase and only that passphrase restores it
     let dir = tempfile::tempdir().unwrap();
     let pass = SecretString::from("correct horse battery staple");
     save_share_c(dir.path(), &share_c, &pass).unwrap();
@@ -238,7 +238,7 @@ async fn keygen_propose_sign_and_submit() {
         share_c.shared_public_key
     );
 
-    // 承認される提案: A+B で署名し、B が送信する
+    // An approved proposal: A+B sign and B sends
     let node = node(share_b.clone(), "approve");
     let wallet = node.parts().signer.wallets()[0];
     let (outcome, b_to_a) = run_proposal(&node, &share_a, proposal(wallet)).await;
@@ -253,7 +253,7 @@ async fn keygen_propose_sign_and_submit() {
         }
     );
 
-    // A には最終署名(s)も署名済み tx も届いていない
+    // Neither the final signature (s) nor the signed tx reached A
     let s = envelope.signature().s().to_be_bytes::<32>();
     let s_hex = alloy_primitives::hex::encode(s);
     let text = String::from_utf8_lossy(&b_to_a).to_lowercase();
@@ -264,23 +264,23 @@ async fn keygen_propose_sign_and_submit() {
     );
     assert!(!text.contains(&alloy_primitives::hex::encode(&sent[0])));
 
-    // 提案と違う tx への署名要求を、A は断る
+    // A refuses a signing request for a tx other than the one it proposed
     let reply = decline_mismatched_request(&share_a, proposal(wallet)).await;
     assert!(matches!(reply, AtoB::Decline { .. }), "{reply:?}");
 
-    // 方針なし → 要確認 → パスキーで承認 → A が再開して送信
+    // No policy → needs confirmation → passkey approval → A resumes and it is sent
     user_approval_over_the_wire(share_b.clone(), &share_a).await;
 
-    // A をなくしたとき: B+C で復旧
+    // When A is lost: recover with B+C
     recovery_with_b_and_c(share_b.clone(), &share_c).await;
 
-    // EIP-712: A+B で署名し、署名が A(エージェント)に返る
+    // EIP-712: A+B sign and the signature goes back to A (the agent)
     typed_data_signature(share_b.clone(), &share_a).await;
 
-    // serve のまま 2 つ目のウォレットを作る(パスキーはこの接続の上で登録される)
+    // Create a second wallet while serving (the passkey is registered over this connection)
     second_wallet_while_serving(share_b.clone()).await;
 
-    // 拒否される提案: 署名要求は来ず、何も送信されない
+    // A rejected proposal: no signing request comes and nothing is sent
     let node = self::node(share_b, "reject");
     let (outcome, _) = run_proposal(&node, &share_a, proposal(wallet)).await;
     assert_eq!(
@@ -292,7 +292,7 @@ async fn keygen_propose_sign_and_submit() {
     assert!(node.parts().chain.sent().is_empty());
 }
 
-/// 偽の B が、提案と違う hash への署名を求める。A の返事を返す。
+/// A fake B asks for a signature over a hash other than the proposal's. Returns A's reply.
 async fn decline_mismatched_request(share_a: &KeyShare, p: Proposal) -> AtoB {
     let (a_io, b_io) = tokio::io::duplex(1 << 16);
     let fake_b = async move {
@@ -330,7 +330,7 @@ async fn decline_mismatched_request(share_a: &KeyShare, p: Proposal) -> AtoB {
     reply
 }
 
-/// 1 本の接続で B と話す。
+/// Talk to B over one connection.
 async fn with_b<T>(
     node: &Node,
     session: impl AsyncFnOnce(&mut BConnection<DuplexStream>) -> T,
@@ -349,7 +349,7 @@ async fn with_b<T>(
 }
 
 async fn user_approval_over_the_wire(share_b: KeyShare, share_a: &KeyShare) {
-    // 方針がないので、提案は必ず要確認になる
+    // There is no policy, so the proposal always needs confirmation
     let node = node_with(share_b, "approve", false);
     let wallet = node.parts().signer.wallets()[0];
     let mut passkey = SoftwarePasskey::generate(DEFAULT_RP_ID, DEFAULT_ORIGIN);
@@ -364,7 +364,7 @@ async fn user_approval_over_the_wire(share_b: KeyShare, share_a: &KeyShare) {
         other => panic!("expected pending, got {other:?}"),
     };
 
-    // 承認前の再開は保留のまま
+    // Resuming before approval keeps it pending
     let early = with_b(&node, async |c| {
         resume(c, share_a, wallet, request_id).await
     })
@@ -395,7 +395,7 @@ async fn user_approval_over_the_wire(share_b: KeyShare, share_a: &KeyShare) {
     assert_eq!(envelope.recover_signer().unwrap(), wallet);
 }
 
-/// A の端末をなくしたとき: 凍結中でも、パスキー承認 + C のシェアで B と署名して全額を移せる。
+/// When A's device is lost: even while frozen, a passkey approval plus share C lets B sign and move all funds.
 async fn recovery_with_b_and_c(share_b: KeyShare, share_c: &KeyShare) {
     let node = node_with(share_b, "reject", false);
     let wallet = node.parts().signer.wallets()[0];
@@ -407,7 +407,7 @@ async fn recovery_with_b_and_c(share_b: KeyShare, share_c: &KeyShare) {
     let unsigned = proposal(wallet).unsigned_tx;
     let signing_hash = alloy_primitives::keccak256(&unsigned);
 
-    // 別の tx への承認では通らない
+    // An approval for another tx does not work
     let wrong = passkey.sign(UserOperation::ApproveRecovery {
         wallet,
         signing_hash: B256::repeat_byte(0xee),
@@ -481,7 +481,7 @@ async fn typed_data_signature(share_b: KeyShare, share_a: &KeyShare) {
     assert!(node.parts().chain.sent().is_empty());
 }
 
-/// `serve` の接続で新しいウォレットを作る。パスキーがなければ断る。
+/// Create a new wallet over a `serve` connection. Refused without a passkey.
 async fn second_wallet_while_serving(share_b: KeyShare) {
     let node = node_with(share_b, "approve", false);
     let first = node.parts().signer.wallets()[0];
@@ -514,7 +514,7 @@ async fn second_wallet_while_serving(share_b: KeyShare) {
         }
     };
 
-    // パスキーのない鍵生成は断る
+    // Key generation without a passkey is refused
     assert!(run(None).await.is_err());
     assert_eq!(node.parts().signer.wallets(), vec![first]);
 
@@ -531,7 +531,7 @@ async fn second_wallet_while_serving(share_b: KeyShare) {
             .exists(&mw_node_b_server::share_label(second))
     );
 
-    // 登録されたパスキーで、新しいウォレットのオーナー用の一覧を開ける
+    // The registered passkey can open the new wallet's owner view
     let view = node
         .handle_user_request(UserRequest::Signed {
             signed: passkey.sign(UserOperation::ListPending {
@@ -545,7 +545,7 @@ async fn second_wallet_while_serving(share_b: KeyShare) {
         "{view:?}"
     );
 
-    // 新しいウォレットの方針をパスキーで登録し、そのシェアで署名・送信できる
+    // Register the new wallet's policy with the passkey; its share can then sign and send
     let set = node
         .handle_user_request(UserRequest::Signed {
             signed: passkey.sign(UserOperation::SetPolicy {

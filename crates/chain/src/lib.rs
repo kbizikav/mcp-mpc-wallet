@@ -1,4 +1,4 @@
-//! EVM まわり: 未署名 tx のデコード、既知 call のデコード、チェーン RPC の抽象化。
+//! EVM helpers: decoding unsigned txs and known calls, and the chain RPC abstraction.
 
 pub mod calls;
 pub mod client;

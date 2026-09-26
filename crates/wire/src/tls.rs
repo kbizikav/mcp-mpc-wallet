@@ -1,8 +1,8 @@
-//! A↔B 間の mTLS。
+//! mTLS between A and B.
 //!
-//! デプロイごとに専用の CA を作り、B のサーバ証明書と A のクライアント証明書を発行する。
-//! CA の秘密鍵は発行後に捨てるので、あとから証明書を増やすことはできない。
-//! Nitro 移行後は、B の証明書を attestation に結びつける(M4 では未実装)。
+//! Each deployment gets its own CA, which issues B's server certificate and A's client certificate.
+//! The CA's private key is discarded after issuing, so no more certificates can be added later.
+//! After moving to Nitro, B's certificate is bound to the attestation (not implemented in M4).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 
-/// B のサーバ証明書の名前
+/// Name on B's server certificate
 pub const SERVER_NAME: &str = "mw-node-b";
 
 #[derive(Debug, thiserror::Error)]
@@ -31,7 +31,7 @@ pub enum TlsError {
     Config(String),
 }
 
-/// 生成した PKI。鍵は PEM 文字列。
+/// A generated PKI. Keys are PEM strings.
 pub struct Pki {
     pub ca_pem: String,
     pub node_b_cert_pem: String,
@@ -86,7 +86,7 @@ fn write_file(dir: &Path, name: &str, contents: &str, secret: bool) -> Result<()
 }
 
 impl Pki {
-    /// B 用と A 用のディレクトリに分けて書き出す。
+    /// Write it out into separate directories for B and A.
     pub fn write(&self, node_b_dir: &Path, node_a_dir: &Path) -> Result<(), TlsError> {
         for dir in [node_b_dir, node_a_dir] {
             std::fs::create_dir_all(dir).map_err(|source| TlsError::Write {
@@ -130,7 +130,7 @@ fn identity(
     Ok((certs, key))
 }
 
-/// B 側: デプロイ CA が発行したクライアント証明書だけを受け付ける。
+/// B's side: accept only client certificates issued by the deployment CA.
 pub fn server_config(
     ca_pem: &str,
     cert_pem: &str,
@@ -150,7 +150,7 @@ pub fn server_config(
     Ok(Arc::new(config))
 }
 
-/// A 側: デプロイ CA が発行した B の証明書だけを信頼する。
+/// A's side: trust only B's certificate issued by the deployment CA.
 pub fn client_config(
     ca_pem: &str,
     cert_pem: &str,
@@ -166,10 +166,10 @@ pub fn client_config(
     Ok(Arc::new(config))
 }
 
-/// B(enclave)用: TLS 証明書をこの場で作る。鍵はメモリの外に出ない。
+/// For B (in the enclave): create the TLS certificate on the spot. The key never leaves memory.
 ///
-/// クライアント(A)の証明書は、これまでどおりデプロイ CA で検証する。
-/// A は B の証明書を CA ではなく attestation で信頼する(user_data に証明書の hash が入る)。
+/// The client (A) certificate is still verified with the deployment CA.
+/// A trusts B's certificate through attestation instead of the CA (user_data holds the certificate's hash).
 pub fn server_config_with_ephemeral_cert(
     ca_pem: &str,
 ) -> Result<(Arc<ServerConfig>, Vec<u8>), TlsError> {
@@ -180,15 +180,15 @@ pub fn server_config_with_ephemeral_cert(
         .push(DnType::CommonName, SERVER_NAME);
     let cert = params.self_signed(&key)?;
     let cert_der = cert.der().to_vec();
-    // サーバ証明書はデプロイ CA に繋がっていなくてよい(A は attestation で信頼する)
+    // The server certificate need not chain to the deployment CA (A trusts it through attestation)
     let config = server_config(ca_pem, &cert.pem(), &key.serialize_pem())?;
     Ok((config, cert_der))
 }
 
-/// A 用: B の証明書の信頼は attestation に任せる(接続後に必ず検証すること)。
+/// For A: leave trust in B's certificate to attestation (always verify it after connecting).
 ///
-/// 証明書そのものは受け入れるが、TLS 1.3 のハンドシェイク署名は通常どおり検証するので、
-/// 相手がその証明書の秘密鍵を持っていることは保証される。
+/// The certificate itself is accepted, but the TLS 1.3 handshake signature is verified as usual,
+/// so the peer is guaranteed to hold the certificate's private key.
 pub fn client_config_for_attested_server(
     cert_pem: &str,
     key_pem: &str,
@@ -220,7 +220,7 @@ impl rustls::client::danger::ServerCertVerifier for AttestedServerVerifier {
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        // 信頼は接続後の attestation の検証で決める
+        // Trust is decided by verifying the attestation after connecting
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
@@ -289,7 +289,7 @@ mod tests {
             };
             tls.write_all(b"ping").await.ok()?;
             tls.flush().await.ok()?;
-            // サーバが読み終えるまで接続を閉じない
+            // Do not close the connection until the server has read everything
             Some(tls)
         };
         let (got, _client) = tokio::join!(accept, connect);
@@ -310,7 +310,7 @@ mod tests {
         let theirs = generate_pki().unwrap();
         let server =
             server_config(&ours.ca_pem, &ours.node_b_cert_pem, &ours.node_b_key_pem).unwrap();
-        // 相手の CA が発行したクライアント証明書(サーバは正しく信頼している)
+        // A client certificate issued by another CA (the server trusts the right one)
         let client = client_config(
             &ours.ca_pem,
             &theirs.node_a_cert_pem,

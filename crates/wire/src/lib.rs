@@ -1,4 +1,4 @@
-//! A↔B 間のプロトコル: メッセージ、フレーミング、接続上での MPC、mTLS。
+//! The A↔B protocol: messages, framing, MPC over the connection, and mTLS.
 
 pub mod conn;
 pub mod messages;

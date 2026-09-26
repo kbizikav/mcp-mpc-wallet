@@ -62,6 +62,6 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 unwrap_used = "warn"
 
-# Paillier/ZK の計算はデバッグビルドだと遅すぎるので、依存 crate だけ最適化する
+# Paillier/ZK math is too slow in debug builds, so optimize the dependencies only
 [profile.dev.package."*"]
 opt-level = 3

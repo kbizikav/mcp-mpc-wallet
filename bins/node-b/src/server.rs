@@ -1,4 +1,4 @@
-//! A とユーザーアプリからの接続を処理する。
+//! Handles connections from A and from the user app.
 
 use mw_audit::AuditSink;
 use mw_chain::ChainClient;
@@ -14,16 +14,16 @@ use crate::keygen::keygen_after_request;
 use crate::signer::{AConnection, CggmpSigner, PeerSession};
 use crate::{AttestationService, store_share};
 
-/// `serve` の中で新しいウォレットの鍵生成を受け付けるための部品。
+/// What `serve` needs to accept key generation for new wallets.
 pub struct KeygenService {
     pub storage: Box<dyn mw_tee::SealedStorage>,
-    /// 鍵生成は重いので 1 件ずつ
+    /// Key generation is heavy, so one at a time
     pub busy: tokio::sync::Mutex<()>,
 }
 
-/// 1 本の接続で届く要求を順に処理する。署名済み tx は返さず、結果だけを返す。
+/// Handle the requests on one connection in order. Returns outcomes only, never a signed tx.
 ///
-/// `after_request` は要求を 1 件処理するたびに呼ばれる(状態の保存に使う)。
+/// `after_request` is called after each request (used to persist state).
 pub async fn serve_connection<C, Sim, L, N, K, A, S>(
     node: &JudgeNode<C, Sim, L, CggmpSigner<S>, N, K, A>,
     conn: AConnection<S>,
@@ -120,7 +120,7 @@ where
                 signed,
                 unsigned_tx,
             } => {
-                // 復旧では、相手は C のシェアで署名に参加する
+                // In recovery, the peer joins the signing with share C
                 session.cosigner = PARTY_C;
                 let outcome = node.recover(signed, unsigned_tx, &mut session).await;
                 session.cosigner = PARTY_A;
@@ -132,7 +132,7 @@ where
                 after_request();
                 session.conn.send(&BtoA::User { response }).await?;
             }
-            // 中断した署名セッションの残り。読み捨てる
+            // Leftovers of an aborted signing session. Drain them
             AtoB::Decline { .. } | AtoB::PartialSignature { .. } | AtoB::Mpc { .. } => {}
             other => {
                 let message = format!("unexpected message: {}", kind(&other));

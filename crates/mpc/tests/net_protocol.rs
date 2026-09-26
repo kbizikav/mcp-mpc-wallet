@@ -1,7 +1,7 @@
-//! プロセスをまたいだ鍵生成と署名(チャネルで 2 プロセスを模す)。
+//! Key generation and signing across processes (two processes simulated with channels).
 //!
-//! A 側プロセスが A(0) と C(2) を、B 側プロセスが B(1) を動かす。
-//! 署名は A と B で行い、最終署名は B だけが合成する。
+//! The process on A's side runs A(0) and C(2); the process on B's side runs B(1).
+//! A and B sign, and only B combines the final signature.
 
 #![allow(clippy::unwrap_used)]
 
@@ -21,7 +21,7 @@ fn session() -> [u8; 32] {
     s
 }
 
-/// (A 側プロセスのシェア [A, C], B のシェア)
+/// (shares of A's process [A, C], B's share)
 async fn distributed_keygen() -> (Vec<KeyShare>, KeyShare) {
     let s = session();
 
@@ -93,11 +93,11 @@ async fn keygen_and_sign_across_processes() {
         }),
     );
 
-    // A は部分署名を作って B に送るだけ
+    // A only makes its partial signature and sends it to B
     let partial_a = issue_partial(a_presig.unwrap().pop().unwrap().unwrap(), &signing_hash);
     assert!(combine(std::slice::from_ref(&partial_a), &signing_hash, &public_key).is_none());
 
-    // B が合成し、ウォレットのアドレスに復元できる署名を得る
+    // B combines them and gets a signature that recovers to the wallet address
     let partial_b = issue_partial(b_presig.unwrap().pop().unwrap().unwrap(), &signing_hash);
     let signature = combine(&[partial_a, partial_b], &signing_hash, &public_key).unwrap();
     assert_eq!(
@@ -107,7 +107,7 @@ async fn keygen_and_sign_across_processes() {
         address
     );
 
-    // 復旧経路: A+C(B なし)と B+C(A なし)でも署名できる
+    // Recovery paths: A+C (without B) and B+C (without A) can sign too
     for pair in [[share_a, share_c], [&share_b, share_c]] {
         let hash = keccak256(format!("recovery {}", pair[0].i));
         let sig = sign_with_local_shares(pair, &hash).await.unwrap();

@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// エンクレーブ内のローカル時計。これだけには頼らず、チェーンの時刻と併用する。
+/// The local clock inside the enclave. Never relied on alone; always combined with the chain's time.
 pub trait Clock: Send + Sync {
     fn now_unix(&self) -> u64;
 }
@@ -16,7 +16,7 @@ impl Clock for SystemClock {
     }
 }
 
-/// テスト用に手で進める時計。
+/// A clock advanced by hand, for tests.
 pub struct ManualClock(AtomicU64);
 
 impl ManualClock {

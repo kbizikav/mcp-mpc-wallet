@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# パスキー検証なしで方針を登録できるようにする(テストと M5 までの開発用。本番で有効にしない)
+# Allows registering policies without passkey verification (tests and development until M5; never enable in production)
 unverified-policy = []
 
 [dependencies]

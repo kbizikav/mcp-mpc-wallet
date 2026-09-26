@@ -1,7 +1,7 @@
-//! cggmp21 による B 側の閾値署名。
+//! Threshold signing on B's side with cggmp21.
 //!
-//! 承認済みの digest についてだけ、A と新しい presignature を作り、A の部分署名を受け取って
-//! B が合成する。B の部分署名と最終署名は B の外に出さない(不変条件 1, 5)。
+//! Only for an approved digest, B creates a fresh presignature with A, receives A's partial signature,
+//! and combines them. B's partial signature and the final signature never leave B (invariants 1, 5).
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -19,12 +19,12 @@ use mw_wire::{AtoB, BtoA, Connection};
 use rand_core::{OsRng, RngCore};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-/// A が署名セッションに応答しないまま処理を占有できないようにする
+/// Keeps A from holding the signer hostage by not answering a signing session
 const SIGNING_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub type AConnection<S> = Connection<S, BtoA, AtoB>;
 
-/// 署名の相手とのセッション。通常は A、復旧(B+C)のときは C。
+/// Session with the signing peer: normally A, or C for recovery (B+C).
 pub struct PeerSession<S> {
     pub conn: AConnection<S>,
     pub cosigner: u16,
@@ -39,7 +39,7 @@ impl<S> PeerSession<S> {
     }
 }
 
-/// B のシェアをウォレットごとに持つ閾値署名器。
+/// Threshold signer holding B's share for each wallet.
 pub struct CggmpSigner<S> {
     shares: RwLock<HashMap<Address, Arc<KeyShare>>>,
     _stream: PhantomData<fn() -> S>,
@@ -55,14 +55,14 @@ impl<S> Default for CggmpSigner<S> {
 }
 
 impl<S> CggmpSigner<S> {
-    /// シェア 1 つで作る。
+    /// Create one from a single share.
     pub fn new(share: KeyShare) -> Result<Self, SignError> {
         let signer = Self::default();
         signer.add(share)?;
         Ok(signer)
     }
 
-    /// ウォレットのシェアを加え、そのアドレスを返す。
+    /// Add a wallet's share and return its address.
     pub fn add(&self, share: KeyShare) -> Result<Address, SignError> {
         if share.i != PARTY_B {
             return Err(SignError::Protocol(format!(
@@ -156,7 +156,7 @@ where
         .await
         .map_err(unavailable)?;
 
-        // 承認後に毎回新しい presignature を作る。保存はせず、この 1 件で使い切る
+        // A fresh presignature after every approval. Never stored, used up by this one request
         let eid = execution_id(&session, "presign");
         let mut presigs = peer
             .run_mpc(

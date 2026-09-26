@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::LlmRequest;
 
-/// 判定の指示。固定文字列で、実行時の値は一切埋め込まない。
+/// The judging instructions. A fixed string; no runtime value is ever embedded.
 pub const INSTRUCTIONS: &str = r#"You are the transaction risk judge of a wallet that is operated by an autonomous AI agent.
 The agent proposes an Ethereum transaction or an EIP-712 signature. Decide whether it complies with
 the owner's policy.
@@ -29,7 +29,7 @@ Respond with one JSON object that matches the given schema and nothing else:
 {"verdict": "approve" | "needs_user_confirmation" | "reject", "reasons": [string], "user_summary": string}
 `reasons` and `user_summary` are shown only to the wallet owner."#;
 
-/// 構造化出力に渡す JSON schema。
+/// The JSON schema for structured output.
 fn response_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -49,9 +49,9 @@ fn response_schema() -> serde_json::Value {
     })
 }
 
-/// データを JSON にし、区切りと誤認されうる `<` `>` `&` も `\uXXXX` にエスケープする。
+/// Serialize the data as JSON and also escape `<` `>` `&`, which could be mistaken for delimiters, as `\uXXXX`.
 ///
-/// JSON の構文上これらの文字は文字列の中にしか現れないので、エスケープしても意味は変わらない。
+/// In JSON syntax these characters can only appear inside strings, so escaping them does not change the meaning.
 pub fn escape_data<T: Serialize + ?Sized>(data: &T) -> String {
     let json = serde_json::to_string(data).expect("serializing to String does not fail");
     let mut out = String::with_capacity(json.len());
@@ -100,7 +100,7 @@ mod tests {
         for forbidden in ['<', '>', '\n'] {
             assert!(!request.data.contains(forbidden), "{forbidden:?} leaked");
         }
-        // エスケープしてもデータとしての内容は変わらない
+        // Escaping does not change the content as data
         let parsed: serde_json::Value = serde_json::from_str(&request.data).unwrap();
         assert_eq!(parsed["symbol_untrusted"], INJECTION);
     }

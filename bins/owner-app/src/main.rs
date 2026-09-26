@@ -1,18 +1,18 @@
-//! オーナー用の Web アプリ(ローカルで動かす)。
+//! Owner web app (runs locally).
 //!
-//! ブラウザのパスキー(Touch ID など)で操作に署名し、B に送る。
-//! サーバは操作を組み立てて challenge を返し、ブラウザが作った assertion を B に中継するだけで、
-//! 署名の鍵には触れない。B への接続は `--expected-pcr0` を指定すると attestation で検証する。
+//! Operations are signed with the browser's passkey (Touch ID and so on) and sent to B.
+//! The server only builds operations, returns challenges and relays the browser's assertions to B;
+//! it never touches a signing key. With `--expected-pcr0`, the connection to B is verified by attestation.
 //!
-//! `--data-dir` にウォレットがなければ初期設定モードで起動し、画面から鍵生成を行う。
-//! 鍵生成の要求にはブラウザで作ったパスキーを含め、B は attestation を検証した同じ接続の上で
-//! それを最初のパスキーとして登録する。
+//! If `--data-dir` has no wallet, it starts in setup mode and runs key generation from the UI.
+//! The key generation request carries the passkey created in the browser, and B registers it as
+//! the first passkey over the same attested connection.
 //!
 //! ```text
 //! mw-owner --node-b <host:port> --tls-dir <dir> --data-dir <dir> [--expected-pcr0 <hex>]
-//!          [--legacy-passkey <file>]   # ソフトウェアパスキーからブラウザのパスキーへ移すとき
+//!          [--legacy-passkey <file>]   # when moving from a software passkey to a browser passkey
 //! ```
-//! ブラウザでは http://localhost:8787 を開く(パスキーの RP ID が `localhost` なので)。
+//! Open http://localhost:8787 in the browser (the passkey RP ID is `localhost`).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -46,7 +46,7 @@ use serde_json::json;
 
 /// Base Sepolia
 const CHAIN_ID: u64 = 84532;
-/// 復旧用パスフレーズの最短の長さ(文字数)
+/// Minimum length of the recovery passphrase (characters)
 const MIN_PASSPHRASE_CHARS: usize = 12;
 
 #[derive(Parser)]
@@ -56,20 +56,20 @@ struct Cli {
     node_b: String,
     #[arg(long)]
     tls_dir: PathBuf,
-    /// A のシェアとウォレットのアドレスを置くディレクトリ(`mw-node-a` と同じもの)
+    /// Directory with share A and the wallet address (the same one as `mw-node-a`)
     #[arg(long)]
     data_dir: PathBuf,
-    /// B が Nitro Enclave で動くとき、期待するイメージの PCR0(16 進)
+    /// When B runs in a Nitro Enclave, the expected image PCR0 (hex)
     #[arg(long)]
     expected_pcr0: Option<String>,
     #[arg(long, default_value_t = 8787)]
     port: u16,
-    /// いま登録されているソフトウェアパスキー。ブラウザのパスキーへ差し替えるときに一度だけ使う
+    /// The currently registered software passkey. Used once, to switch to a browser passkey
     #[arg(long)]
     legacy_passkey: Option<PathBuf>,
 }
 
-/// 画面から始めた鍵生成の進み具合。
+/// Progress of a key generation started from the UI.
 #[derive(Clone, Default, Serialize)]
 struct SetupJob {
     running: bool,
@@ -83,7 +83,7 @@ struct AppState {
     node_b: String,
     tls_dir: PathBuf,
     data_dir: PathBuf,
-    /// 鍵生成が終わるまでは `None`
+    /// `None` until key generation has finished
     wallet: RwLock<Option<Address>>,
     setup: Mutex<SetupJob>,
     pcr0: Option<String>,
@@ -111,7 +111,7 @@ impl AppState {
 
 type Shared = Arc<AppState>;
 
-/// API のエラー。B が断った理由はそのまま画面に出す(オーナー本人の画面なので)。
+/// An API error. B's reason for refusing is shown as is (this is the owner's own screen).
 struct ApiError(StatusCode, String);
 
 impl IntoResponse for ApiError {
@@ -137,7 +137,7 @@ async fn send(state: &AppState, request: UserRequest) -> Result<UserResponse, Ap
     Ok(response)
 }
 
-/// B の応答を返す。B が断ったら 400 にする。
+/// Return B's response. If B refused, respond with 400.
 fn reply(response: UserResponse) -> Result<Json<UserResponse>, ApiError> {
     match response {
         UserResponse::Error { message } => Err(bad_request(message)),
@@ -211,9 +211,9 @@ async fn status(State(state): State<Shared>) -> Result<Json<serde_json::Value>, 
     })))
 }
 
-// ---- 初期設定 ----------------------------------------------------------------
+// ---- setup ------------------------------------------------------------------
 
-/// 初期設定の画面が最初に呼ぶ。B に接続して(enclave なら attestation を検証して)状態を返す。
+/// The first call of the setup screen. Connects to B (verifying the attestation for an enclave) and returns the state.
 async fn setup_state(State(state): State<Shared>) -> Json<serde_json::Value> {
     let wallet = *state.wallet.read().unwrap_or_else(PoisonError::into_inner);
     let judge = match connect(&state.endpoint).await {
@@ -247,7 +247,7 @@ struct KeygenRequest {
     spki: String,
 }
 
-/// 鍵生成を始める。数十秒かかるので、進み具合は `/api/setup/progress` で返す。
+/// Start key generation. It takes tens of seconds, so progress is served at `/api/setup/progress`.
 async fn setup_keygen(
     State(state): State<Shared>,
     Json(request): Json<KeygenRequest>,
@@ -263,7 +263,7 @@ async fn setup_keygen(
             "the recovery passphrase needs at least {MIN_PASSPHRASE_CHARS} characters"
         )));
     }
-    // 途中で失敗したときに、B だけにウォレットが残るのを避けるため、先に確かめる
+    // Check this first, so a failure halfway does not leave a wallet on B only
     if state.data_dir.join(SHARE_A_FILE).exists() || state.data_dir.join(SHARE_C_FILE).exists() {
         return Err(ApiError(
             StatusCode::CONFLICT,
@@ -338,7 +338,7 @@ async fn setup_progress(State(state): State<Shared>) -> Json<SetupJob> {
     )
 }
 
-/// シェルにそのまま貼れるように引数を引用する。
+/// Quote an argument so it can be pasted into a shell as is.
 fn shell_quote(arg: &str) -> String {
     if !arg.is_empty()
         && arg
@@ -357,7 +357,7 @@ fn absolute(path: &Path) -> PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Claude Code に MCP サーバを登録するコマンド。API キーはシェルの変数のまま残す。
+/// The command that registers the MCP server with Claude Code. API keys stay shell variables.
 async fn mcp_command(State(state): State<Shared>) -> Json<serde_json::Value> {
     let binary = std::env::current_exe()
         .ok()
@@ -387,7 +387,7 @@ async fn mcp_command(State(state): State<Shared>) -> Json<serde_json::Value> {
     }))
 }
 
-// ---- パスキーで署名する操作 ------------------------------------------------------
+// ---- operations signed with the passkey ----------------------------------------------
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -398,7 +398,7 @@ enum ChallengeRequest {
     View,
 }
 
-/// 操作をサーバ側で組み立て、パスキーに署名させる challenge を返す。
+/// Build the operation on the server and return the challenge for the passkey to sign.
 async fn challenge(
     State(state): State<Shared>,
     Json(request): Json<ChallengeRequest>,
@@ -454,7 +454,7 @@ struct SubmitRequest {
     assertion: BrowserAssertion,
 }
 
-/// ブラウザが作った assertion を B に中継する。検証するのは B。
+/// Relay the browser's assertion to B. B does the verification.
 async fn submit(
     State(state): State<Shared>,
     Json(request): Json<SubmitRequest>,
@@ -506,7 +506,7 @@ struct AdoptRequest {
     spki: String,
 }
 
-/// ブラウザのパスキーを登録する。いま登録されているソフトウェアパスキーで差し替えに署名する。
+/// Register the browser's passkey. The currently registered software passkey signs the rotation.
 async fn adopt(
     State(state): State<Shared>,
     Json(request): Json<AdoptRequest>,
@@ -524,12 +524,12 @@ async fn adopt(
         wallet,
         new_passkey,
     });
-    // 署名カウンタが進んだので、送る前に保存し直す
+    // The signature counter moved, so save it before sending
     std::fs::write(path, serde_json::to_vec_pretty(&legacy)?)?;
     reply(send(&state, UserRequest::Signed { signed }).await?)
 }
 
-// ---- 配信 --------------------------------------------------------------------
+// ---- assets --------------------------------------------------------------------
 
 fn asset(content_type: &'static str, body: &'static str) -> Response {
     (
@@ -618,7 +618,7 @@ async fn main() -> anyhow::Result<()> {
         rpc: rpc().await,
         legacy_passkey: cli.legacy_passkey,
     });
-    // 自分の PC からだけ使う
+    // Only reachable from this machine
     let addr = SocketAddr::from(([127, 0, 0, 1], cli.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     match wallet {

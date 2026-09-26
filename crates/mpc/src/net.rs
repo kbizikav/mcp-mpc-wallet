@@ -1,9 +1,9 @@
-//! プロセスをまたいで MPC のメッセージを配送する。
+//! Delivering MPC messages across processes.
 //!
-//! 各プロセスは担当するパーティ(`local`)だけを動かす。宛先がローカルなら
-//! プロセス内のチャネルで渡し、そうでなければ `WireMsg` として `net_out` に出す。
-//! `net_out` / `net_in` の先は、認証・暗号化された A↔B の接続につなぐこと
-//! (cggmp21 はメッセージの認証と秘匿を通信路に任せている)。
+//! Each process runs only the parties it is responsible for (`local`). Messages for a local party
+//! go through an in-process channel; everything else goes out to `net_out` as a `WireMsg`.
+//! Connect `net_out` / `net_in` to an authenticated, encrypted A↔B connection
+//! (cggmp21 leaves message authentication and confidentiality to the channel).
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -22,14 +22,14 @@ use serde::{Deserialize, Serialize};
 
 use cggmp21::round_based;
 
-/// 接続に載せる 1 通のメッセージ。`to` が `None` なら全員宛て(broadcast)。
+/// One message on the connection. `to` of `None` means everyone (broadcast).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WireMsg {
     pub from: u16,
     pub to: Option<u16>,
     pub body: serde_json::Value,
-    /// どの段階(keygen、aux など)のメッセージか。送る側の接続が付ける。
-    /// 相手が先に次の段階へ進んだとき、そのメッセージを今の段階に混ぜないために使う
+    /// Which phase (keygen, aux, ...) the message belongs to. Set by the sending connection.
+    /// Used to keep a peer's messages for the next phase out of the current one when the peer moves ahead
     #[serde(default)]
     pub phase: String,
 }
@@ -68,7 +68,7 @@ impl<M: Clone + Serialize> Router<M> {
     fn deliver(&mut self, to: u16, sender: u16, msg_type: MessageType, msg: M) {
         self.next_id += 1;
         if let Some(inbox) = self.inboxes.get(&to) {
-            // 受け手のプロトコルが先に終わっていたら、届かなくても構わない
+            // If the receiving protocol has already finished, it is fine if this never arrives
             let _ = inbox.unbounded_send(Ok(Incoming {
                 id: self.next_id,
                 sender,
@@ -119,7 +119,7 @@ impl<M: Clone + Serialize> Router<M> {
 impl<M: Clone + Serialize + DeserializeOwned> Router<M> {
     fn route_remote(&mut self, wire: WireMsg) -> Result<(), NetError> {
         let WireMsg { from, to, body, .. } = wire;
-        // 相手側のパーティを名乗るメッセージだけを受け付ける
+        // Accept only messages that claim to come from the peer's parties
         let valid = from < self.n && !self.is_local(from) && to.is_none_or(|t| self.is_local(t));
         if !valid {
             return Err(NetError::Unexpected { from, to });
@@ -139,9 +139,9 @@ impl<M: Clone + Serialize + DeserializeOwned> Router<M> {
     }
 }
 
-/// ローカルのパーティを動かし、全員の出力を返す。
+/// Run the local parties and return every party's output.
 ///
-/// 返る前に、ローカルのパーティが出したメッセージはすべて `net_out` に積み終えている。
+/// Before returning, every message the local parties produced has been queued on `net_out`.
 pub async fn run_parties<M, F, Fut, T>(
     n: u16,
     local: &[u16],
@@ -175,7 +175,7 @@ where
     loop {
         futures::select! {
             outputs = protocols => {
-                // 終了直前に出されたメッセージも相手に届ける
+                // Deliver messages sent right before finishing, too
                 while let Some(Some((from, out))) = outgoing.next().now_or_never() {
                     router.route_local(from, out)?;
                 }
@@ -188,7 +188,7 @@ where
             }
             wire = net_in.next() => match wire {
                 Some(wire) => router.route_remote(wire)?,
-                // 相手が先に終わった。届いたメッセージだけで終われるなら終わる
+                // The peer finished first. Finish if the messages that arrived are enough
                 None => return finish_after_close(&mut protocols, &mut outgoing, &mut router),
             },
         }
@@ -203,9 +203,9 @@ impl ArcWake for WokenFlag {
     }
 }
 
-/// 接続が閉じた後、ローカルのメッセージだけでプロトコルを進める。
+/// After the connection closes, advance the protocol with local messages only.
 ///
-/// 起こされもせず、配送するメッセージもないのに終わらなければ、行き詰まりとみなす。
+/// If it does not finish although nothing wakes it up and there is nothing to deliver, it is treated as stuck.
 fn finish_after_close<P, O, M>(
     protocols: &mut P,
     outgoing: &mut O,
@@ -268,13 +268,13 @@ mod tests {
     #[test]
     fn rejects_spoofed_or_misrouted_remote_messages() {
         let (mut r, _net) = router(&[0, 2]);
-        // ローカルのパーティを名乗るもの
+        // Claims to be a local party
         assert!(r.route_remote(wire(0, None)).is_err());
-        // 存在しないパーティから
+        // From a party that does not exist
         assert!(r.route_remote(wire(5, None)).is_err());
-        // リモート宛てのもの
+        // Addressed to a remote party
         assert!(r.route_remote(wire(1, Some(1))).is_err());
-        // 正しいもの
+        // A valid one
         assert!(r.route_remote(wire(1, Some(2))).is_ok());
         assert!(r.route_remote(wire(1, None)).is_ok());
     }

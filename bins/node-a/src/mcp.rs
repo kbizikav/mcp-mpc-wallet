@@ -1,7 +1,7 @@
-//! エージェント向けの MCP ツール。
+//! MCP tools for the agent.
 //!
-//! エージェントにできるのは、ウォレットの情報を見ることと、tx を提案することだけ。
-//! 方針を変えるツールは作らない(不変条件 6)。
+//! The agent can only look at the wallet and propose transactions.
+//! There is deliberately no tool that changes the policy (invariant 6).
 
 use std::sync::Arc;
 
@@ -40,29 +40,29 @@ impl WalletServer {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct ProposeParams {
-    /// 送り先のアドレス(0x から始まる 20 バイト)
+    /// Recipient address (20 bytes, starting with 0x)
     pub to: String,
-    /// 送る ETH の量(wei、10 進の文字列)。省略時は 0
+    /// Amount of ETH to send (wei, as a decimal string). Defaults to 0
     pub value_wei: Option<String>,
-    /// calldata(0x から始まる 16 進)。省略時は空
+    /// Calldata (hex starting with 0x). Defaults to empty
     pub data: Option<String>,
-    /// この tx の目的の説明。判定では参考情報としてだけ扱われる
+    /// What this tx is for. The judge treats it as context only
     pub note: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct SignTypedDataParams {
-    /// EIP-712 の typed data(types, primaryType, domain, message)。JSON オブジェクトか、その文字列
+    /// EIP-712 typed data (types, primaryType, domain, message), as a JSON object or a string of one
     pub typed_data: serde_json::Value,
-    /// 署名の目的の説明。判定では参考情報としてだけ扱われる
+    /// What this signature is for. The judge treats it as context only
     pub note: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct ResumeParams {
-    /// `pending_user_confirmation` で返された request_id
+    /// The request_id returned with `pending_user_confirmation`
     pub request_id: String,
 }
 

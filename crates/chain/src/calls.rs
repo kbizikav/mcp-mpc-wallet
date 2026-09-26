@@ -1,6 +1,6 @@
-//! B が calldata から直接読み取れる既知の call。
+//! Known calls that B can read directly from calldata.
 //!
-//! ここでのデコード結果は、シミュレーション結果の検算とシグナル抽出に使う。
+//! The decoded calls are used to cross-check simulation results and to extract signals.
 
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::{SolCall, sol};
@@ -40,7 +40,7 @@ pub enum KnownCall {
     },
 }
 
-/// calldata が既知の call なら、厳密に(余分なバイトなしで)デコードする。
+/// If the calldata is a known call, decode it strictly (no extra bytes).
 pub fn decode_known_call(input: &[u8]) -> Option<KnownCall> {
     let selector: [u8; 4] = input.get(..4)?.try_into().ok()?;
     let call = match selector {
@@ -82,7 +82,7 @@ pub fn decode_known_call(input: &[u8]) -> Option<KnownCall> {
         }
         _ => return None,
     };
-    // 後ろに余計なバイトが付いたものは既知 call として扱わない
+    // Calldata with trailing extra bytes is not treated as a known call
     (call_len(&call) == input.len()).then_some(call)
 }
 
@@ -94,12 +94,12 @@ fn call_len(call: &KnownCall) -> usize {
         }
 }
 
-/// ERC-20 transfer の calldata を作る(テストとエージェント向けツールで使う)。
+/// Build ERC-20 transfer calldata (used by tests and agent tooling).
 pub fn encode_erc20_transfer(to: Address, amount: U256) -> Vec<u8> {
     transferCall { to, amount }.abi_encode()
 }
 
-/// ERC-20 approve の calldata を作る。
+/// Build ERC-20 approve calldata.
 pub fn encode_erc20_approve(spender: Address, amount: U256) -> Vec<u8> {
     approveCall { spender, amount }.abi_encode()
 }

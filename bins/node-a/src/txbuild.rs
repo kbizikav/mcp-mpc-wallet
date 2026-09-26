@@ -1,4 +1,4 @@
-//! エージェントの指定(宛先・金額・calldata)から未署名 EIP-1559 tx を組み立てる。
+//! Build an unsigned EIP-1559 tx from what the agent asked for (recipient, amount, calldata).
 
 use alloy_consensus::{SignableTransaction, TxEip1559};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
@@ -21,7 +21,7 @@ pub async fn build(
     let fees = rpc.suggest_fees().await?;
     let gas_limit = match params.gas_limit {
         Some(gas) => gas,
-        // 見積もりに 20% の余裕を持たせる
+        // Leave 20% headroom on the estimate
         None => {
             let estimate = rpc
                 .estimate_gas(from, params.to, params.value, &params.data)
@@ -42,7 +42,7 @@ pub async fn build(
     })
 }
 
-/// 復旧用: 残高からガス代を引いた全額を `to` に送る tx を作る。`to` は EOA であること。
+/// For recovery: a tx that sends the whole balance minus gas to `to`. `to` must be an EOA.
 pub async fn build_sweep(
     rpc: &JsonRpcClient,
     chain_id: u64,

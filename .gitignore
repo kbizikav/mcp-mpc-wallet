@@ -4,7 +4,7 @@
 secrets/
 *.share
 *.key
-# 鍵・証明書・監査ログなどの実行時データ(コミットしない)
+# Runtime data such as keys, certificates and audit logs (never commit)
 /.local
-# ビルドした kmstool
+# Built kmstool
 /deploy/nitro/kmstool

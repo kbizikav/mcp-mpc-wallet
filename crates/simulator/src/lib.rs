@@ -1,7 +1,7 @@
-//! tx シミュレーションの抽象化と、Tenderly Simulation API による実装。
+//! Abstraction over tx simulation, and an implementation with the Tenderly Simulation API.
 //!
-//! シミュレーション結果に含まれるトークン名・シンボルは攻撃者が制御しうるので、
-//! `UntrustedText` として保持する。
+//! Token names and symbols in simulation results can be attacker-controlled,
+//! so they are kept as `UntrustedText`.
 
 pub mod tenderly;
 
@@ -14,7 +14,7 @@ use alloy_primitives::{Address, B256, Bytes, U256};
 use mw_core::UntrustedText;
 use serde::{Deserialize, Serialize};
 
-/// B が自分でデコードした tx から組み立てる入力。
+/// Input built from a tx that B decoded itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SimulationRequest {
     pub chain_id: u64,
@@ -24,11 +24,11 @@ pub struct SimulationRequest {
     pub value: U256,
     pub gas_limit: u64,
     pub max_fee_per_gas: u128,
-    /// シミュレーションの基準ブロック。`None` なら最新
+    /// The block to simulate on. `None` means the latest
     pub block_number: Option<u64>,
 }
 
-/// 資産の移動 1 件。`token` が `None` ならネイティブ ETH。
+/// One asset movement. `token` of `None` means native ETH.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetTransfer {
     pub token: Option<Address>,
@@ -39,7 +39,7 @@ pub struct AssetTransfer {
     pub decimals: Option<u8>,
 }
 
-/// ERC-20 の allowance 変更(approve / permit)1 件。
+/// One ERC-20 allowance change (approve / permit).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AllowanceChange {
     pub token: Address,
@@ -55,10 +55,10 @@ pub struct SimulationReport {
     pub block_number: u64,
     pub transfers: Vec<AssetTransfer>,
     pub allowance_changes: Vec<AllowanceChange>,
-    /// シミュレータが報告したが、このウォレットがモデル化していない変化
-    /// (NFT の移動、ApproveForAll など)。1 件でもあれば「要確認」に倒す
+    /// Changes the simulator reported that this wallet does not model
+    /// (NFT movements, ApproveForAll, ...). Even one of them falls to "needs confirmation"
     pub unrecognized_changes: Vec<String>,
-    /// レスポンス本文のハッシュ。監査ログに残す
+    /// Hash of the response body. Recorded in the audit log
     pub raw_response_hash: B256,
 }
 
@@ -77,7 +77,7 @@ pub trait Simulator: Send + Sync {
     ) -> impl Future<Output = Result<SimulationReport, SimulationError>> + Send;
 }
 
-/// あらかじめ決めた結果を順に返すモック。
+/// A mock that returns predefined results in order.
 #[derive(Default)]
 pub struct ScriptedSimulator {
     responses: Mutex<Vec<Result<SimulationReport, String>>>,
@@ -98,7 +98,7 @@ impl ScriptedSimulator {
         self.requests.lock().expect("poisoned").clone()
     }
 
-    /// 次の呼び出しで返す応答を差し込む。
+    /// Queue the response returned by the next call.
     pub fn respond_next(&self, response: Result<SimulationReport, String>) {
         self.responses.lock().expect("poisoned").push(response);
     }

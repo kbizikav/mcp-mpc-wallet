@@ -4,9 +4,9 @@ use std::sync::Mutex;
 
 use mw_node_b::{UserNotice, UserNotifier};
 
-/// ユーザー向けの通知を JSON Lines に追記し、要約を標準エラーに出す。
+/// Append user notifications to a JSON Lines file and print a summary to stderr.
 ///
-/// ユーザーアプリへの配信は M5 で作る。通知には秘密を含めない。
+/// Delivery to the user app comes in M5. Notifications never contain secrets.
 pub struct JsonlNotifier {
     path: PathBuf,
     lock: Mutex<()>,

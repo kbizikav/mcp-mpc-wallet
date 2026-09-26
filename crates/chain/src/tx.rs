@@ -5,13 +5,13 @@ use alloy_rlp::Decodable;
 
 const EIP1559_TYPE: u8 = 0x02;
 
-/// B が自分でデコードした未署名 tx。
+/// An unsigned tx that B decoded itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedTx {
     pub tx: TxEip1559,
-    /// 署名対象のバイト列(`0x02 || rlp(fields)`)。入力と完全に一致する
+    /// The bytes to sign (`0x02 || rlp(fields)`). Exactly equal to the input
     pub payload: Bytes,
-    /// `keccak256(payload)`。typed tx ではこれがそのまま署名する hash になる
+    /// `keccak256(payload)`. For a typed tx this is the hash that gets signed
     pub signing_hash: B256,
 }
 
@@ -31,10 +31,10 @@ pub enum DecodeError {
     InvalidFees,
 }
 
-/// EIP-2718 形式の未署名 EIP-1559 tx をデコードする。
+/// Decode an unsigned EIP-1559 tx in EIP-2718 form.
 ///
-/// 再エンコードして入力と一致しない(非正規な)エンコーディングは拒否する。
-/// 署名する hash とデコード結果が必ず対応するようにするため。
+/// Non-canonical encodings (ones that do not re-encode to the input) are rejected,
+/// so the signed hash always corresponds to the decoded result.
 pub fn decode_unsigned(payload: &[u8]) -> Result<DecodedTx, DecodeError> {
     let (&ty, mut body) = payload.split_first().ok_or(DecodeError::Empty)?;
     if ty != EIP1559_TYPE {
@@ -61,7 +61,7 @@ pub fn decode_unsigned(payload: &[u8]) -> Result<DecodedTx, DecodeError> {
     })
 }
 
-/// 署名済み tx の raw バイト列と tx hash を作る。
+/// Build the raw bytes and the tx hash of a signed tx.
 pub fn encode_signed(tx: TxEip1559, signature: Signature) -> (Bytes, B256) {
     let signed = tx.into_signed(signature);
     let hash = *signed.hash();

@@ -1,4 +1,4 @@
-//! A から B へのセッション: 鍵生成と提案。
+//! Sessions from A to B: key generation and proposals.
 
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ use tokio_rustls::client::TlsStream;
 
 pub type BConnection<S> = Connection<S, AtoB, BtoA>;
 
-/// B への接続先。`expected` があれば、B が期待する enclave であることを attestation で確かめる。
+/// Where B is. With `expected`, attestation proves that B is the expected enclave.
 #[derive(Clone)]
 pub struct BEndpoint {
     pub addr: String,
@@ -30,9 +30,9 @@ pub struct BEndpoint {
 }
 
 impl BEndpoint {
-    /// `tls_dir` の `node-a.pem` / `node-a.key`(と CA)から作る。
+    /// Built from `node-a.pem` / `node-a.key` (and the CA) in `tls_dir`.
     ///
-    /// PCR0 を指定すると、B の証明書はデプロイ CA ではなく attestation で信頼する。
+    /// With a PCR0, B's certificate is trusted through attestation instead of the deployment CA.
     pub fn from_files(
         addr: &str,
         tls_dir: &std::path::Path,
@@ -80,7 +80,7 @@ pub enum SessionError {
     Config(String),
 }
 
-/// B に接続する。enclave の B なら、他の要求を送る前に attestation を検証する。
+/// Connect to B. For an enclave B, verify the attestation before sending any other request.
 pub async fn connect(
     endpoint: &BEndpoint,
 ) -> Result<BConnection<TlsStream<TcpStream>>, SessionError> {
@@ -106,7 +106,7 @@ pub async fn connect(
     Ok(conn)
 }
 
-/// B に新しい nonce で attestation を求め、この TLS 接続の証明書に結びついているかを確かめる。
+/// Ask B for an attestation with a fresh nonce and check that it is bound to this TLS connection's certificate.
 async fn attest<S>(
     conn: &mut BConnection<S>,
     expected: &ExpectedPcrs,
@@ -131,7 +131,7 @@ where
     }
 }
 
-/// 鍵生成の進み具合(画面に出すため)。
+/// Key generation progress (shown in the UI).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeygenStep {
@@ -148,10 +148,10 @@ pub struct KeygenOutput {
     pub address: Address,
 }
 
-/// B と 2-of-3 の鍵生成を行う。このプロセスは A と C のパーティを動かす。
+/// Run 2-of-3 key generation with B. This process runs parties A and C.
 ///
-/// `passkey` は新しいウォレットの最初のパスキー。B は鍵生成と同じ(attestation を検証した)
-/// 接続の上でこれを登録する。`progress` には進み具合が通知される。
+/// `passkey` is the new wallet's first passkey. B registers it over the same (attested)
+/// connection as the key generation. `progress` receives progress updates.
 pub async fn keygen<S>(
     conn: &mut BConnection<S>,
     passkey: Option<RegisteredPasskey>,
@@ -161,7 +161,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     progress(KeygenStep::GeneratingPrimes);
-    // 素数の生成は重いので、プロトコルを始める前に済ませておく
+    // Prime generation is slow, so do it before the protocol starts
     let (primes_a, primes_c) = tokio::join!(
         tokio::task::spawn_blocking(|| PregeneratedPrimes::generate(&mut OsRng)),
         tokio::task::spawn_blocking(|| PregeneratedPrimes::generate(&mut OsRng)),
@@ -237,7 +237,7 @@ where
     }
     conn.send(&AtoB::KeygenResult { address }).await?;
 
-    // B がシェアを封印し終えるのを待つ(失敗したら、このウォレットは使えない)
+    // Wait until B has sealed its share (if that fails, this wallet is unusable)
     progress(KeygenStep::Sealing);
     match conn.recv().await? {
         BtoA::KeygenStored { address: b } if b == address => {}
@@ -253,9 +253,9 @@ where
     })
 }
 
-/// 提案を送り、B が承認したら署名に参加して、結果を返す。
+/// Send a proposal, join the signing if B approves it, and return the outcome.
 ///
-/// B の署名要求は、この提案の tx の hash に対するもの 1 回だけに応じる。
+/// Only one signing request from B is honoured: the one for this proposal's tx hash.
 pub async fn propose<S>(
     conn: &mut BConnection<S>,
     share_a: &KeyShare,
@@ -264,15 +264,15 @@ pub async fn propose<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    // EIP-1559 の未署名 tx では、ペイロードの keccak256 が署名する hash
+    // For an unsigned EIP-1559 tx, the keccak256 of the payload is the hash to sign
     let expected_hash = keccak256(&proposal.unsigned_tx);
     conn.send(&AtoB::Propose { proposal }).await?;
     cosign_until_outcome(conn, share_a, expected_hash).await
 }
 
-/// EIP-712 署名を提案する。承認されたら署名(`AgentOutcome::Signed`)が返る。
+/// Propose an EIP-712 signature. If approved, the signature (`AgentOutcome::Signed`) is returned.
 ///
-/// digest は A も自分で計算し、それ以外への署名要求には応じない。
+/// A computes the digest itself and refuses signing requests for anything else.
 pub async fn propose_typed_data<S>(
     conn: &mut BConnection<S>,
     share_a: &KeyShare,
@@ -288,9 +288,9 @@ where
     cosign_until_outcome(conn, share_a, expected_hash).await
 }
 
-/// ユーザーが承認した要求の署名・送信を B に再開させる。
+/// Have B resume signing and sending a request the user approved.
 ///
-/// `request_id` は提案した tx の signing hash なので、それ以外への署名要求には応じない。
+/// `request_id` is the proposed tx's signing hash, so signing requests for anything else are refused.
 pub async fn resume<S>(
     conn: &mut BConnection<S>,
     share_a: &KeyShare,
@@ -304,7 +304,7 @@ where
     cosign_until_outcome(conn, share_a, request_id).await
 }
 
-/// ユーザーアプリの要求を B に送る。
+/// Send a user app request to B.
 pub async fn user_request<S>(
     conn: &mut BConnection<S>,
     request: UserRequest,
@@ -320,9 +320,9 @@ where
     }
 }
 
-/// C のシェアで B と署名し、全額を移す復旧 tx を送る(A の端末をなくしたとき)。
+/// Sign with B using share C and send a recovery tx that moves all funds (when A's device is lost).
 ///
-/// `signed` は復旧 tx の signing hash へのパスキー署名(`ApproveRecovery`)。
+/// `signed` is the passkey signature over the recovery tx's signing hash (`ApproveRecovery`).
 pub async fn recover<S>(
     conn: &mut BConnection<S>,
     share_c: &KeyShare,
@@ -341,9 +341,9 @@ where
     cosign_until_outcome(conn, share_c, expected_hash).await
 }
 
-/// B の署名要求のうち、`expected_hash` へのもの 1 回だけに応じ、最終結果を待つ。
+/// Honour only one of B's signing requests, the one for `expected_hash`, and wait for the final outcome.
 ///
-/// `share` は A か C のシェア。B と組む署名者の組の中での自分の位置で presign に参加する。
+/// `share` is share A or C. It joins presigning at its position in the signer set it forms with B.
 async fn cosign_until_outcome<S>(
     conn: &mut BConnection<S>,
     share: &KeyShare,
@@ -386,7 +386,7 @@ where
                     .await?
                     .pop()
                     .ok_or_else(|| SessionError::Unexpected("no presignature".into()))??;
-                // presignature はここで消費され、二度と使えない
+                // The presignature is consumed here and can never be used again
                 let partial = issue_partial(presig, &signing_hash);
                 conn.send(&AtoB::PartialSignature {
                     partial: serde_json::to_value(&partial)
@@ -396,7 +396,7 @@ where
             }
             BtoA::Outcome { outcome } => return Ok(outcome),
             BtoA::Error { message } => return Err(SessionError::Remote(message)),
-            // 断った署名要求の MPC メッセージは読み捨てる
+            // Drain the MPC messages of a signing request we refused
             BtoA::Mpc { .. } => {}
             other => return Err(SessionError::Unexpected(format!("{other:?}"))),
         }

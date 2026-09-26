@@ -1,11 +1,11 @@
-//! WebAuthn assertion(navigator.credentials.get の結果)の検証。
+//! Verifying WebAuthn assertions (the result of navigator.credentials.get).
 //!
-//! 署名対象は `authenticatorData || SHA-256(clientDataJSON)`。次をすべて確かめる:
-//! - clientDataJSON の type が "webauthn.get"、challenge が操作の hash、origin が期待どおり
-//! - authenticatorData の rpIdHash が期待する RP ID の hash
-//! - UP(ユーザーの存在)と UV(ユーザー検証)のフラグが立っている
-//! - 署名カウンタが前回より増えている(0 のまま使う認証器は除く)
-//! - 登録済みの公開鍵で ES256 の署名が正しい
+//! The signed data is `authenticatorData || SHA-256(clientDataJSON)`. All of the following are checked:
+//! - clientDataJSON's type is "webauthn.get", its challenge is the operation's hash, and its origin is the expected one
+//! - authenticatorData's rpIdHash is the hash of the expected RP ID
+//! - The UP (user present) and UV (user verified) flags are set
+//! - The signature counter increased since last time (except for authenticators that always use 0)
+//! - The ES256 signature is valid for the registered public key
 
 use alloy_primitives::{B256, Bytes};
 use base64::Engine;
@@ -26,15 +26,15 @@ pub struct PasskeyAssertion {
     pub credential_id: Bytes,
     pub authenticator_data: Bytes,
     pub client_data_json: Bytes,
-    /// DER 形式の ECDSA 署名
+    /// ECDSA signature in DER form
     pub signature: Bytes,
 }
 
-/// B に登録されたユーザーのパスキー。
+/// The user's passkey registered with B.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisteredPasskey {
     pub credential_id: Bytes,
-    /// SEC1 形式の P-256 公開鍵
+    /// P-256 public key in SEC1 form
     pub public_key: Bytes,
     pub sign_count: u32,
 }
@@ -65,7 +65,7 @@ struct ClientData {
     origin: String,
 }
 
-/// 受け付ける RP(RP ID と、その RP のページの origin の組)。
+/// An accepted RP (a pair of RP ID and the origin of that RP's page).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelyingParty {
     pub rp_id: String,
@@ -90,7 +90,7 @@ impl std::fmt::Display for RelyingParty {
 impl std::str::FromStr for RelyingParty {
     type Err = String;
 
-    /// `<rp_id>=<origin>` の形
+    /// In the form `<rp_id>=<origin>`
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (rp_id, origin) = s
             .split_once('=')
@@ -102,13 +102,13 @@ impl std::str::FromStr for RelyingParty {
     }
 }
 
-/// 複数の RP を受け付ける。assertion の origin に対応する RP の RP ID で照合する。
+/// Accepts several RPs. The assertion is checked against the RP ID of the RP matching its origin.
 pub struct PasskeyVerifier {
     pub allowed: Vec<RelyingParty>,
 }
 
 impl PasskeyVerifier {
-    /// 操作の署名を検証し、成功したら新しい署名カウンタを返す(呼び出し側で保存する)。
+    /// Verify an operation's signature and, on success, return the new signature counter (the caller stores it).
     pub fn verify(
         &self,
         key: &RegisteredPasskey,
@@ -165,7 +165,7 @@ impl PasskeyVerifier {
 }
 
 impl RegisteredPasskey {
-    /// ブラウザの `AuthenticatorAttestationResponse.getPublicKey()`(SPKI DER)から作る。
+    /// Build from the browser's `AuthenticatorAttestationResponse.getPublicKey()` (SPKI DER).
     pub fn from_spki(credential_id: Bytes, spki_der: &[u8]) -> Result<Self, PasskeyError> {
         use p256::elliptic_curve::sec1::ToEncodedPoint;
         use p256::pkcs8::DecodePublicKey;
@@ -179,7 +179,7 @@ impl RegisteredPasskey {
     }
 }
 
-/// テストやソフトウェアパスキーで使う: challenge の base64url 表現。
+/// For tests and software passkeys: the challenge in base64url.
 pub fn encode_challenge(challenge: &B256) -> String {
     URL_SAFE_NO_PAD.encode(challenge)
 }

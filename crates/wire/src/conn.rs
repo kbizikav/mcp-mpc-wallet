@@ -1,4 +1,4 @@
-//! 長さ区切りの JSON フレームで型付きメッセージをやりとりする接続。
+//! A connection that exchanges typed messages as length-delimited JSON frames.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -16,7 +16,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use mw_mpc::round_based::MpcParty;
 
-/// aux info のメッセージには ZK 証明が入るので大きめにとる
+/// Aux info messages carry ZK proofs, so allow them to be large
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -36,9 +36,9 @@ pub enum WireError {
 pub struct Connection<S, Out, In> {
     sink: SplitSink<Framed<S, LengthDelimitedCodec>, Bytes>,
     stream: SplitStream<Framed<S, LengthDelimitedCodec>>,
-    /// MPC の途中で先に届いた、MPC 以外のメッセージ
+    /// Non-MPC messages that arrived early, in the middle of an MPC run
     pending: VecDeque<In>,
-    /// 前の段階の MPC の途中で先に届いた、次の段階の MPC メッセージ
+    /// MPC messages for the next phase that arrived early, in the middle of the previous phase
     early: VecDeque<WireMsg>,
     _out: PhantomData<fn(Out)>,
 }
@@ -67,7 +67,7 @@ where
         send_on(&mut self.sink, msg).await
     }
 
-    /// 送信側を閉じる(TLS なら close_notify を送る)。使い終わった接続は落とす前にこれを呼ぶ。
+    /// Close the sending side (sends close_notify over TLS). Call this before dropping a finished connection.
     pub async fn close(mut self) -> Result<(), WireError> {
         self.sink.close().await?;
         Ok(())
@@ -80,15 +80,15 @@ where
         recv_on(&mut self.stream).await
     }
 
-    /// この接続の上でローカルのパーティを動かす。
+    /// Run the local parties over this connection.
     ///
-    /// `phase` はこの段階の名前(keygen、aux など)で、両側で同じものを使う。
-    /// `wrap` は送るメッセージの包み方、`unwrap` は受け取ったメッセージから MPC 部分を
-    /// 取り出す関数。MPC 以外のメッセージが届いたら、以降の `recv` で返すために取っておく。
+    /// `phase` names this phase (keygen, aux, ...), and both sides use the same one.
+    /// `wrap` wraps outgoing messages, and `unwrap` extracts the MPC part from incoming messages.
+    /// Non-MPC messages that arrive are kept so that later calls to `recv` return them.
     ///
-    /// 相手はこの段階を終えると、すぐ次の段階のメッセージを送ってくる。それを今の段階に
-    /// 渡すと失われるので、次の `run_mpc` のために取っておき、ここでの受信は終える
-    /// (相手のこの段階のメッセージは、接続の順序からすべて届いている)。
+    /// When the peer finishes this phase, it immediately sends messages for the next one. Handing those to
+    /// this phase would lose them, so they are kept for the next `run_mpc` and receiving stops here
+    /// (the connection is ordered, so all of the peer's messages for this phase have arrived).
     #[allow(clippy::too_many_arguments)]
     pub async fn run_mpc<M, F, Fut, T>(
         &mut self,
@@ -114,7 +114,7 @@ where
             result
         };
 
-        // 前の段階のときに先に届いていた、この段階のメッセージ
+        // Messages for this phase that arrived early, during the previous phase
         let mut later = VecDeque::new();
         while let Some(wire) = self.early.pop_front() {
             if wire.phase == phase {
@@ -127,7 +127,7 @@ where
 
         let sink = &mut self.sink;
         let writer = async move {
-            // run_parties が終わると net_out が閉じ、残りを送り切ってから抜ける
+            // When run_parties finishes, net_out closes; send what is left and exit
             while let Some(mut msg) = to_peer.next().await {
                 msg.phase = phase.to_owned();
                 send_on(sink, &wrap(msg)).await?;
@@ -145,7 +145,7 @@ where
                     frame = recv_on::<In, _>(stream).fuse() => match frame {
                         Ok(msg) => match unwrap(msg) {
                             Ok(wire) if wire.phase != phase => {
-                                // 相手は次の段階に進んだ。この段階の残りはローカルで終えられる
+                                // The peer moved on to the next phase. The rest of this phase can finish locally
                                 early.push_back(wire);
                                 return Ok(());
                             }
@@ -154,7 +154,7 @@ where
                                     return Ok(());
                                 }
                             }
-                            // 相手はプロトコルを終えている。以降のメッセージは後で読む
+                            // The peer has finished the protocol. Later messages are read afterwards
                             Err(other) => {
                                 pending.push_back(other);
                                 return Ok(());

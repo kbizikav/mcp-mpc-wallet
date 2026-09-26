@@ -1,4 +1,4 @@
-//! ウォレットごとのレート制限と自動凍結(不変条件 9)。
+//! Per-wallet rate limits and automatic freezing (invariant 9).
 
 use std::collections::{HashMap, VecDeque};
 
@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub struct GuardConfig {
-    /// `proposal_window_secs` の間に受け付ける提案の上限
+    /// Maximum number of proposals accepted within `proposal_window_secs`
     pub max_proposals: usize,
     pub proposal_window_secs: u64,
-    /// `reject_window_secs` の間にこの回数だけ拒否したら凍結する
+    /// Freeze after this many rejections within `reject_window_secs`
     pub max_rejects: usize,
     pub reject_window_secs: u64,
 }
@@ -39,7 +39,7 @@ struct WalletState {
     proposals: VecDeque<u64>,
     rejects: VecDeque<u64>,
     frozen: bool,
-    /// 凍結するたびに増える。凍結の解除にはこの値への署名が必要
+    /// Increases on every freeze. Unfreezing needs a signature over this value
     freeze_epoch: u64,
 }
 
@@ -54,7 +54,7 @@ impl WalletState {
     }
 }
 
-/// 永続化する凍結状態。
+/// The persisted freeze state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FreezeState {
     pub wallet: Address,
@@ -92,7 +92,7 @@ impl WalletGuard {
         }
     }
 
-    /// 提案を受け付けてよいかを判定し、受け付けたら記録する。
+    /// Decide whether a proposal may be accepted, and record it if so.
     pub fn admit(&mut self, wallet: Address, now: u64) -> Admission {
         let state = self.wallets.entry(wallet).or_default();
         if state.frozen {
@@ -106,7 +106,7 @@ impl WalletGuard {
         Admission::Allowed
     }
 
-    /// 判定を記録する。この判定で新たに凍結したら `true`。
+    /// Record a judgment. Returns `true` if this judgment newly froze the wallet.
     pub fn record(&mut self, wallet: Address, verdict: Verdict, now: u64) -> bool {
         if verdict != Verdict::Reject {
             return false;
@@ -117,12 +117,12 @@ impl WalletGuard {
         state.rejects.len() >= self.config.max_rejects && state.freeze()
     }
 
-    /// 凍結する。新たに凍結したら `true`。
+    /// Freeze. Returns `true` if newly frozen.
     pub fn freeze(&mut self, wallet: Address) -> bool {
         self.wallets.entry(wallet).or_default().freeze()
     }
 
-    /// 現在の凍結の世代に署名された解除だけを受け付ける。
+    /// Accept only an unfreeze signed for the current freeze epoch.
     pub fn unfreeze(&mut self, wallet: Address, signed_epoch: u64) -> Result<(), UnfreezeError> {
         let state = self.wallets.entry(wallet).or_default();
         if !state.frozen {
@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(g.admit(W, 1), Admission::Allowed);
         assert_eq!(g.admit(W, 2), Admission::RateLimited);
         assert_eq!(g.admit(W, 60), Admission::Allowed);
-        // 別のウォレットには影響しない
+        // Other wallets are not affected
         assert_eq!(g.admit(Address::repeat_byte(2), 2), Admission::Allowed);
     }
 
@@ -203,7 +203,7 @@ mod tests {
         assert!(g.record(W, Verdict::Reject, 3));
         assert!(g.is_frozen(W));
         assert_eq!(g.admit(W, 1_000), Admission::Frozen);
-        // 凍結の通知は一度だけ
+        // The freeze is notified only once
         assert!(!g.record(W, Verdict::Reject, 4));
     }
 
@@ -217,7 +217,7 @@ mod tests {
         g.unfreeze(W, 1).unwrap();
         assert!(!g.is_frozen(W));
 
-        // 前回の解除の署名は、次の凍結には使えない
+        // The signature of the previous unfreeze cannot be used for the next freeze
         g.freeze(W);
         assert_eq!(
             g.unfreeze(W, 1),

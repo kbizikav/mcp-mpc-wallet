@@ -1,4 +1,4 @@
-//! 承認の束縛・期限判定・一回限りの引き換え(不変条件 1, 3, 4)。
+//! Binding approvals, checking their expiry, and redeeming them once (invariants 1, 3, 4).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -6,12 +6,12 @@ use std::sync::Mutex;
 use alloy_primitives::{Address, B256};
 use serde::{Deserialize, Serialize};
 
-/// 承認の有効期限(秒)
+/// How long an approval is valid (seconds)
 pub const APPROVAL_TTL_SECS: u64 = 300;
 
-/// ある時点の時刻の証拠。
+/// Evidence of the time at some moment.
 ///
-/// エンクレーブの時計だけに頼らないよう、TLS 経由で取得した最新ブロックも併せて持つ。
+/// Also carries the latest block fetched over TLS, so the enclave's clock is not the only source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeWitness {
     pub local_unix: u64,
@@ -26,27 +26,27 @@ pub enum ApprovalOrigin {
     User,
 }
 
-/// 署名するものの種類。
+/// What kind of thing is signed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SigningKind {
-    /// EIP-1559 tx。アカウントの nonce に束縛する
+    /// An EIP-1559 tx. Bound to the account nonce
     Transaction,
-    /// EIP-712 typed data。アカウントの nonce はないので digest 全体に束縛する
+    /// EIP-712 typed data. There is no account nonce, so it is bound to the whole digest
     TypedData,
 }
 
-/// 署名要求を一意に指す値。承認時と署名時で完全に一致しなければならない。
+/// Uniquely identifies a signing request. Must match exactly at approval and at signing time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SigningRequestKey {
     pub kind: SigningKind,
     pub chain_id: u64,
     pub from: Address,
-    /// tx の nonce。typed data では 0
+    /// The tx nonce. 0 for typed data
     pub nonce: u64,
-    /// 署名対象のハッシュ(tx の signing hash、または EIP-712 digest)
+    /// The hash to sign (the tx signing hash or the EIP-712 digest)
     pub signing_hash: B256,
-    /// エンコード済み未署名 tx 全体(または typed data 全体)のハッシュ
+    /// Hash of the whole encoded unsigned tx (or the whole typed data)
     pub payload_hash: B256,
 }
 
@@ -74,7 +74,7 @@ pub enum ApprovalError {
 }
 
 impl Approval {
-    /// 期限内かを、ローカル時計とチェーンの両方で確かめる。
+    /// Check the expiry against both the local clock and the chain.
     pub fn check_fresh(&self, now: &TimeWitness) -> Result<(), ApprovalError> {
         let issued = &self.issued;
         if now.local_unix < issued.local_unix
@@ -92,10 +92,10 @@ impl Approval {
     }
 }
 
-/// 承認済みで、期限内であることを確認済みの署名対象。
+/// A signing target that is approved and checked to be within its expiry.
 ///
-/// `ApprovalRegistry::redeem` でしか作れず、`Clone` もできない。
-/// 閾値署名はこの値を消費してしか始められない。
+/// Only `ApprovalRegistry::redeem` can create it, and it is not `Clone`.
+/// Threshold signing can only start by consuming this value.
 #[derive(Debug)]
 pub struct ApprovedDigest {
     key: SigningRequestKey,
@@ -112,7 +112,7 @@ impl ApprovedDigest {
     }
 }
 
-/// B が承認した署名要求の表。各承認は一度しか引き換えられない。
+/// The table of signing requests B approved. Each approval can be redeemed only once.
 #[derive(Default)]
 pub struct ApprovalRegistry {
     entries: Mutex<HashMap<B256, Approval>>,
@@ -133,9 +133,9 @@ impl ApprovalRegistry {
         Ok(())
     }
 
-    /// 承認を引き換える。成否にかかわらず、該当する承認はこの時点で削除される。
+    /// Redeem an approval. Whether or not it succeeds, the matching approval is removed right here.
     ///
-    /// `pending_nonce` は署名直前に取得したアカウントの次の nonce。
+    /// `pending_nonce` is the account's next nonce, fetched just before signing.
     pub fn redeem(
         &self,
         request: &SigningRequestKey,
@@ -161,7 +161,7 @@ impl ApprovalRegistry {
         })
     }
 
-    /// 期限切れの承認を捨てる。
+    /// Drop expired approvals.
     pub fn purge_expired(&self, now: &TimeWitness) {
         self.entries
             .lock()
@@ -246,7 +246,7 @@ mod tests {
                 registry.redeem(&request, &later(10), 7).unwrap_err(),
                 ApprovalError::Mismatch
             );
-            // 失敗した引き換えでも承認は消える
+            // The approval is gone even after a failed redemption
             assert_eq!(
                 registry.redeem(&key(7), &later(10), 7).unwrap_err(),
                 ApprovalError::NotApproved
@@ -264,7 +264,7 @@ mod tests {
             ApprovalError::Expired
         );
 
-        // ローカル時計が止められていても、チェーンの時刻で期限切れになる
+        // Even if the local clock is held back, the chain time expires it
         let registry = registry_with(7);
         let frozen_clock = TimeWitness {
             local_unix: T0.local_unix,
@@ -275,7 +275,7 @@ mod tests {
             ApprovalError::Expired
         );
 
-        // チェーンの見え方が止められていても、ローカル時計で期限切れになる
+        // Even if the view of the chain is held back, the local clock expires it
         let registry = registry_with(7);
         let stale_chain = TimeWitness {
             local_unix: T0.local_unix + APPROVAL_TTL_SECS + 1,

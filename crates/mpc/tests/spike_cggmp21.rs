@@ -1,12 +1,12 @@
 #![allow(clippy::unwrap_used)]
 
-//! M0 spike: cggmp21 で次のフローが成立することを確認する。
+//! M0 spike: check that the following flow works with cggmp21.
 //!
-//! 1. A, B, C の 3 者で 2-of-3 の DKG と aux info 生成を行う
-//! 2. B が承認した digest についてのみ、A と B が新しい presignature を生成する
-//! 3. A は自分の部分署名を B にだけ渡し、B が合成・検証する
+//! 1. A, B and C run 2-of-3 DKG and aux info generation
+//! 2. Only for a digest B approved, A and B generate a fresh presignature
+//! 3. A hands its partial signature to B only, and B combines and verifies
 //!
-//! A が持つのは presignature と自分の部分署名だけで、最終署名は持たない。
+//! A only ever holds the presignature and its own partial signature, never the final signature.
 
 use cggmp21::{
     DataToSign, ExecutionId, KeyShare, PartialSignature, Presignature,
@@ -69,7 +69,7 @@ async fn setup_2_of_3() -> Vec<KeyShare<E, SecurityLevel128>> {
         .collect()
 }
 
-/// `signers` に含まれる 2 者で、新しい presignature を 1 つ生成する。
+/// Generate one fresh presignature with the two parties in `signers`.
 async fn presign(
     shares: &[KeyShare<E, SecurityLevel128>],
     signers: [u16; 2],
@@ -95,7 +95,7 @@ fn eth_address(public_key: &Point<E>) -> [u8; 20] {
     hash[12..].try_into().unwrap()
 }
 
-/// cggmp21 の (r, s) を Ethereum 用の (r, s, v) にする。v は復元で決める。
+/// Turn a cggmp21 (r, s) into Ethereum's (r, s, v). v is found by recovery.
 fn to_recoverable(
     sig: &cggmp21::Signature<E>,
     prehash: &[u8; 32],
@@ -123,24 +123,24 @@ async fn a_sends_partial_signature_only_to_b() {
     let public_key = *shares[0].shared_public_key;
     let address = eth_address(&public_key);
 
-    // B が承認した tx の signing hash(ここではダミー)
+    // The signing hash of a tx B approved (a dummy here)
     let digest: [u8; 32] = Keccak256::digest(b"approved unsigned tx").into();
     let data =
         DataToSign::<E>::from_scalar(cggmp21::generic_ec::Scalar::from_be_bytes_mod_order(digest));
 
-    // 承認後に presignature を新しく作り、この 1 回だけ使う
+    // After approval, make a fresh presignature and use it for this one signature only
     let mut presigs = presign(&shares, [A, B]).await.into_iter();
     let presig_a = presigs.next().unwrap();
     let presig_b = presigs.next().unwrap();
 
-    // A 側: 自分の部分署名を作って B に送るだけ
+    // A's side: only make its partial signature and send it to B
     let partial_a: PartialSignature<E> = presig_a.issue_partial_signature(data);
 
-    // A の部分署名だけでは有効な署名にならない
+    // A's partial signature alone is not a valid signature
     let only_a = PartialSignature::combine(std::slice::from_ref(&partial_a)).unwrap();
     assert!(only_a.verify(&public_key, &data).is_err());
 
-    // B 側: 自分の部分署名と合成して検証する
+    // B's side: combine with its own partial signature and verify
     let partial_b = presig_b.issue_partial_signature(data);
     let sig = PartialSignature::combine(&[partial_a, partial_b]).unwrap();
     sig.verify(&public_key, &data)
@@ -148,7 +148,7 @@ async fn a_sends_partial_signature_only_to_b() {
 
     let (_sig, _recid) = to_recoverable(&sig, &digest, address);
 
-    // presignature は `issue_partial_signature(self)` で消費されるので、型の上でも再利用できない
+    // `issue_partial_signature(self)` consumes the presignature, so the types prevent reuse too
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -175,7 +175,7 @@ async fn recovery_paths_can_sign() {
 
 #[test]
 fn affine_x_is_available() {
-    // Presignature の r 計算に必要なトレイトが secp256k1 で満たされていることの確認
+    // Check that secp256k1 satisfies the traits needed to compute a presignature's r
     fn assert_has_affine_x<T: HasAffineX<E>>() {}
     assert_has_affine_x::<Point<E>>();
 }

@@ -1,5 +1,5 @@
 #!/bin/bash
-# AWS 公式の kmstool_enclave_cli と libnsm.so をビルドして deploy/nitro/kmstool/ に置く。
+# Build AWS's official kmstool_enclave_cli and libnsm.so and put them in deploy/nitro/kmstool/.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)

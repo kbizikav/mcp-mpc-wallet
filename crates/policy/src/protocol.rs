@@ -1,7 +1,7 @@
-//! ユーザーアプリと B のあいだのメッセージ。
+//! Messages between the user app and B.
 //!
-//! 方針の変更・要確認 tx の承認・凍結の解除・保留一覧の閲覧は、パスキー署名が必要。
-//! 凍結・保留中の要求の却下・状態の確認は、署名なしでできる(どれも資金を動かさない)。
+//! Changing the policy, approving txs that need confirmation, unfreezing and viewing pending requests need a passkey signature.
+//! Freezing, rejecting a pending request and checking the status need no signature (none of them moves funds).
 
 use alloy_primitives::{Address, B256};
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ pub enum UserRequest {
     Status { wallet: Address },
 }
 
-/// 保留中の要求の詳細(ユーザーにだけ見せる)。
+/// Details of a pending request (shown to the user only).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingView {
     pub request_id: B256,
@@ -25,11 +25,11 @@ pub struct PendingView {
     pub approved: bool,
     pub reasons: Vec<String>,
     pub summary: Option<String>,
-    /// B が抽出した効果(JSON)。攻撃者由来の文字列はエスケープ済み
+    /// The effects B extracted (JSON). Attacker-controlled strings are escaped
     pub effects: String,
 }
 
-/// B がユーザーに通知した出来事(送信、拒否とその理由、凍結など)。
+/// An event B notified to the user (a send, a rejection and its reasons, a freeze, ...).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivityView {
     pub at: u64,
@@ -50,7 +50,7 @@ pub enum UserResponse {
     Frozen {
         freeze_epoch: u64,
     },
-    /// オーナー用の一覧: 保留中の要求、直近の出来事、方針の本文
+    /// The owner view: pending requests, recent events and the policy text
     PendingRequests {
         requests: Vec<PendingView>,
         #[serde(default)]

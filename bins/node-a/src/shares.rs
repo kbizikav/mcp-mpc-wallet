@@ -1,9 +1,9 @@
-//! A のシェアと復旧用シェア C の保存。
+//! Storage for share A and the recovery share C.
 //!
-//! - A: 所有者だけが読めるファイルに JSON で置く(エージェントに読まれうる前提)
-//! - C: age(scrypt + ChaCha20-Poly1305)でユーザーのパスフレーズにより暗号化する。
-//!   A と C が同じ PC に平文で並ぶと、B を通さずに署名できてしまうため。
-//!   M5 で WebAuthn PRF による暗号化に置き換える。
+//! - A: JSON in a file only the owner can read (assumed readable by the agent)
+//! - C: encrypted with the user's passphrase using age (scrypt + ChaCha20-Poly1305).
+//!   If A and C sat in plaintext on the same machine, they could sign without B.
+//!   To be replaced with WebAuthn PRF encryption in M5.
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -12,7 +12,7 @@ use mw_mpc::protocol::KeyShare;
 use secrecy::{ExposeSecret, SecretString};
 
 pub const SHARE_A_FILE: &str = "share-a.json";
-/// ウォレットのアドレス(公開情報)。オーナー用アプリはこれでウォレットの有無を判断する
+/// The wallet address (public). The owner app uses it to tell whether a wallet exists
 pub const WALLET_FILE: &str = "wallet.json";
 pub const SHARE_C_FILE: &str = "share-c.age";
 
@@ -53,7 +53,7 @@ fn read(path: &Path) -> Result<Vec<u8>, ShareError> {
     })
 }
 
-/// 鍵生成が終わったウォレットのアドレスを書く。
+/// Write the address of a wallet whose key generation has finished.
 pub fn save_wallet(dir: &Path, address: alloy_primitives::Address) -> Result<(), ShareError> {
     let bytes = serde_json::to_vec_pretty(&serde_json::json!({ "address": address }))
         .map_err(|e| ShareError::Malformed(e.to_string()))?;
@@ -63,7 +63,7 @@ pub fn save_wallet(dir: &Path, address: alloy_primitives::Address) -> Result<(),
     })
 }
 
-/// 鍵生成済みならウォレットのアドレスを返す。
+/// Return the wallet address if key generation has finished.
 pub fn load_wallet(dir: &Path) -> Option<alloy_primitives::Address> {
     let bytes = std::fs::read(dir.join(WALLET_FILE)).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
@@ -100,7 +100,7 @@ pub fn save_share_c(
     write_new(&dir.join(SHARE_C_FILE), &ciphertext)
 }
 
-/// 復旧時に使う。
+/// Used for recovery.
 pub fn load_share_c(dir: &Path, passphrase: &SecretString) -> Result<KeyShare, ShareError> {
     let ciphertext = read(&dir.join(SHARE_C_FILE))?;
     let identity = age::scrypt::Identity::new(age::secrecy::SecretString::from(
