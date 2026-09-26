@@ -29,7 +29,7 @@ use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use clap::Parser;
-use mw_chain::JsonRpcClient;
+use mw_chain::{JsonRpcClient, Network};
 use mw_core::Policy;
 use mw_node_a::session::{BEndpoint, KeygenStep, connect, keygen, user_request};
 use mw_node_a::shares::{
@@ -44,8 +44,6 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-/// Base Sepolia
-const CHAIN_ID: u64 = 84532;
 /// Minimum length of the recovery passphrase (characters)
 const MIN_PASSPHRASE_CHARS: usize = 12;
 
@@ -67,6 +65,9 @@ struct Cli {
     /// The currently registered software passkey. Used once, to switch to a browser passkey
     #[arg(long)]
     legacy_passkey: Option<PathBuf>,
+    /// The chain (`base-sepolia` or `base`). Must match judge node B
+    #[arg(long, env = "MW_CHAIN", default_value_t = Network::BaseSepolia)]
+    chain: Network,
 }
 
 /// Progress of a key generation started from the UI.
@@ -89,6 +90,7 @@ struct AppState {
     pcr0: Option<String>,
     rpc: Option<JsonRpcClient>,
     legacy_passkey: Option<PathBuf>,
+    network: Network,
 }
 
 impl AppState {
@@ -196,8 +198,10 @@ async fn status(State(state): State<Shared>) -> Result<Json<serde_json::Value>, 
     };
     Ok(Json(json!({
         "wallet": wallet,
-        "chain": "Base Sepolia",
-        "chain_id": CHAIN_ID,
+        "chain": state.network.name(),
+        "chain_id": state.network.chain_id(),
+        "testnet": state.network.is_testnet(),
+        "explorer": state.network.explorer(),
         "balance_eth": balance,
         "attested": state.pcr0.is_some(),
         "pcr0": state.pcr0,
@@ -236,6 +240,8 @@ async fn setup_state(State(state): State<Shared>) -> Json<serde_json::Value> {
         "judge_reachable": judge.is_ok(),
         "judge_error": judge.err(),
         "job": job,
+        "chain": state.network.name(),
+        "testnet": state.network.is_testnet(),
     }))
 }
 
@@ -375,6 +381,9 @@ async fn mcp_command(State(state): State<Shared>) -> Json<serde_json::Value> {
     ];
     if let Some(pcr0) = &state.pcr0 {
         args.extend(["--expected-pcr0".into(), pcr0.clone()]);
+    }
+    if state.network != Network::default() {
+        args.extend(["--chain".into(), state.network.slug().into()]);
     }
     let args: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
     let command = format!(
@@ -588,10 +597,10 @@ fn router(state: Shared) -> Router {
         .with_state(state)
 }
 
-async fn rpc() -> Option<JsonRpcClient> {
+async fn rpc(network: Network) -> Option<JsonRpcClient> {
     let key = std::env::var("ALCHEMY_API_KEY").ok()?;
-    let url = SecretString::from(format!("https://base-sepolia.g.alchemy.com/v2/{key}"));
-    JsonRpcClient::connect(url, CHAIN_ID).await.ok()
+    let url = SecretString::from(network.alchemy_url(&key));
+    JsonRpcClient::connect(url, network.chain_id()).await.ok()
 }
 
 #[tokio::main]
@@ -615,8 +624,9 @@ async fn main() -> anyhow::Result<()> {
         wallet: RwLock::new(wallet),
         setup: Mutex::new(SetupJob::default()),
         pcr0: cli.expected_pcr0,
-        rpc: rpc().await,
+        rpc: rpc(cli.chain).await,
         legacy_passkey: cli.legacy_passkey,
+        network: cli.chain,
     });
     // Only reachable from this machine
     let addr = SocketAddr::from(([127, 0, 0, 1], cli.port));

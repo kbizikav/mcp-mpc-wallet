@@ -2,12 +2,14 @@
 
 pub mod calls;
 pub mod client;
+pub mod network;
 pub mod rpc;
 pub mod tx;
 pub mod typed;
 
 pub use calls::{KnownCall, decode_known_call};
 pub use client::{BlockInfo, ChainClient, ChainError, MockChain};
+pub use network::Network;
 pub use rpc::{FeeSuggestion, JsonRpcClient, ReceiptInfo};
 pub use tx::{DecodeError, DecodedTx, decode_unsigned, encode_signed};
 pub use typed::{DecodedTypedData, KnownTypedData, TypedDataError, decode_typed_data};

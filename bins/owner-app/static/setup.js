@@ -55,6 +55,7 @@ export async function startSetup(setupState, onFinish) {
   wizard.onFinish = onFinish;
   wizard.wallet = setupState.wallet;
   document.body.dataset.mode = "setup";
+  $("setup-chain").textContent = setupState.testnet === false ? `${setupState.chain} mainnet · real funds` : `Testnet only · ${setupState.chain || "Base Sepolia"}`;
   let resume = 0;
   if (setupState.job && setupState.job.running) resume = 3;
   else if (setupState.wallet) {
@@ -331,7 +332,7 @@ function keygenStep(body) {
           "div",
           { class: "verdict ok" },
           icon("check", 22),
-          el("div", {}, el("strong", {}, "Your wallet is ready"), el("div", { class: "addr-big mono" }, job.address), el("p", { class: "muted" }, "Fund it with a little Base Sepolia ETH before the agent sends anything.")),
+          el("div", {}, el("strong", {}, "Your wallet is ready"), el("div", { class: "addr-big mono" }, job.address), el("p", { class: "muted" }, `Fund it with a little ${wizard.state.chain || "Base Sepolia"} ETH before the agent sends anything.`)),
         ),
       );
       next.classList.remove("hidden");

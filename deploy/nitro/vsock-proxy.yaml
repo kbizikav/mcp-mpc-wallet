@@ -2,5 +2,6 @@
 allowlist:
   - {address: kms.ap-northeast-1.amazonaws.com, port: 443}
   - {address: base-sepolia.g.alchemy.com, port: 443}
+  - {address: base-mainnet.g.alchemy.com, port: 443}
   - {address: api.tenderly.co, port: 443}
   - {address: api.openai.com, port: 443}

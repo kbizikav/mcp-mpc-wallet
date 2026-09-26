@@ -5,7 +5,7 @@
 #   9000  parent → enclave: the startup bundle (env.sh and the contents of /data) as a tar
 #   9001  enclave → parent: the contents of /data (sealed shares, policies, audit log), sent periodically
 #   9002  enclave → parent: logs
-#   8000  KMS (used directly by kmstool), 8001+ vsock-proxy to external APIs
+#   8000  KMS (used directly by kmstool), 8001+ vsock-proxy to external APIs (8004: Base mainnet RPC)
 #   7443  parent → enclave: mTLS from A (TLS terminates inside the enclave)
 set -eu
 
@@ -19,7 +19,7 @@ rm -f /data/env.sh
 
 # Point external hosts at separate loopback addresses and relay them to the vsock-proxy (B terminates TLS)
 i=2
-for entry in base-sepolia.g.alchemy.com:8001 api.tenderly.co:8002 api.openai.com:8003; do
+for entry in base-sepolia.g.alchemy.com:8001 api.tenderly.co:8002 api.openai.com:8003 base-mainnet.g.alchemy.com:8004; do
     host=${entry%%:*}
     port=${entry##*:}
     echo "127.0.0.$i $host" >> /etc/hosts

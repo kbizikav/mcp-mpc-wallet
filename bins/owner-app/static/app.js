@@ -6,7 +6,7 @@
 
 import {
   $, el, icon, api, busy, toast, shortHex, timeAgo, clockTime, formatEth, addressLink, txLink,
-  copyButton, signed, storedCredential, storeCredential, createPasskey, templatePicker, RP_ID,
+  copyButton, signed, storedCredential, storeCredential, createPasskey, templatePicker, RP_ID, setExplorer,
 } from "./ui.js";
 import { startSetup, setupPending } from "./setup.js";
 
@@ -167,7 +167,7 @@ function pipeline(s) {
     link("mTLS + attestation"),
     node("chip", "Judge B", s.attested ? "Nitro Enclave · verified" : "Development", s.attested ? "ok" : "warn"),
     link("co-signs & broadcasts"),
-    node("chain", "Base Sepolia", "Testnet"),
+    node("chain", s.chain, s.testnet ? "Testnet" : "Mainnet · real funds", s.testnet ? "" : "warn"),
   );
 }
 
@@ -460,6 +460,7 @@ function onHash() {
 async function refreshStatus() {
   try {
     app.status = await api("/api/status");
+    setExplorer(app.status.explorer);
     $("offline").classList.add("hidden");
   } catch (e) {
     $("offline").classList.remove("hidden");

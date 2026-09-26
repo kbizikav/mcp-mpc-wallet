@@ -4,7 +4,11 @@
 // inserted with text nodes (see `el`), never as HTML.
 
 export const RP_ID = "localhost";
-export const EXPLORER = "https://sepolia.basescan.org";
+// Block explorer of the wallet's chain. Set from /api/status.
+export let EXPLORER = "https://sepolia.basescan.org";
+export function setExplorer(url) {
+  if (url) EXPLORER = url;
+}
 
 export const $ = (id) => document.getElementById(id);
 

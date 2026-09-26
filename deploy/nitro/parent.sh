@@ -5,6 +5,7 @@
 #   parent.sh stop                   stop the enclave and the relays
 #
 # Put ALCHEMY_API_KEY, TENDERLY_*, OPENAI_API_KEY and MW_KMS_KEY_ID in /opt/mw/secrets.env.
+# Add MW_CHAIN=base there to judge on Base mainnet (the default is base-sepolia).
 # /opt/mw/data holds tls/ (B's certificate and key) and the sealed data the enclave sends back.
 set -euo pipefail
 
@@ -35,6 +36,7 @@ start() {
     vsock-proxy 8001 base-sepolia.g.alchemy.com 443 --config "$MW/vsock-proxy.yaml" &
     vsock-proxy 8002 api.tenderly.co 443 --config "$MW/vsock-proxy.yaml" &
     vsock-proxy 8003 api.openai.com 443 --config "$MW/vsock-proxy.yaml" &
+    vsock-proxy 8004 base-mainnet.g.alchemy.com 443 --config "$MW/vsock-proxy.yaml" &
 
     # Receive data and logs from the enclave
     socat -u VSOCK-LISTEN:9001,fork,reuseaddr SYSTEM:"tar -x -C $MW/data" &

@@ -27,7 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use alloy_primitives::{Address, B256};
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use mw_chain::{ChainClient, JsonRpcClient, encode_signed};
+use mw_chain::{ChainClient, JsonRpcClient, Network, encode_signed};
 use mw_core::AgentOutcome;
 use mw_core::Policy;
 use mw_mpc::protocol::{address_of, sign_with_local_shares};
@@ -44,6 +44,9 @@ use secrecy::SecretString;
 struct Cli {
     #[command(subcommand)]
     command: Command,
+    /// The chain for recovery transactions (`base-sepolia` or `base`)
+    #[arg(long, global = true, env = "MW_CHAIN", default_value_t = Network::BaseSepolia)]
+    chain: Network,
 }
 
 #[derive(clap::Args)]
@@ -166,13 +169,10 @@ struct Recovery {
     yes: bool,
 }
 
-/// Base Sepolia
-const CHAIN_ID: u64 = 84532;
-
-async fn rpc() -> anyhow::Result<JsonRpcClient> {
+async fn rpc(network: Network) -> anyhow::Result<JsonRpcClient> {
     let key = std::env::var("ALCHEMY_API_KEY").context("ALCHEMY_API_KEY is not set")?;
-    let url = SecretString::from(format!("https://base-sepolia.g.alchemy.com/v2/{key}"));
-    Ok(JsonRpcClient::connect(url, CHAIN_ID).await?)
+    let url = SecretString::from(network.alchemy_url(&key));
+    Ok(JsonRpcClient::connect(url, network.chain_id()).await?)
 }
 
 fn passphrase(path: &Path) -> anyhow::Result<SecretString> {
@@ -264,7 +264,9 @@ fn print(response: &UserResponse) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    let network = cli.chain;
+    match cli.command {
         Command::PasskeyNew {
             passkey,
             rp_id,
@@ -367,7 +369,7 @@ async fn main() -> anyhow::Result<()> {
             if wallet != target.wallet {
                 bail!("share C belongs to {wallet}, not {}", target.wallet);
             }
-            let tx = build_sweep(&rpc().await?, CHAIN_ID, wallet, recovery.to).await?;
+            let tx = build_sweep(&rpc(network).await?, network.chain_id(), wallet, recovery.to).await?;
             let unsigned = encode_unsigned(&tx);
             let mut key = load_passkey(&passkey)?;
             let signed = key.sign(UserOperation::ApproveRecovery {
@@ -389,8 +391,8 @@ async fn main() -> anyhow::Result<()> {
             let share_c =
                 load_share_c(&recovery.share_dir, &passphrase(&recovery.passphrase_file)?)?;
             let wallet = address_of(&share_a.shared_public_key);
-            let rpc = rpc().await?;
-            let tx = build_sweep(&rpc, CHAIN_ID, wallet, recovery.to).await?;
+            let rpc = rpc(network).await?;
+            let tx = build_sweep(&rpc, network.chain_id(), wallet, recovery.to).await?;
             let signing_hash = alloy_primitives::keccak256(encode_unsigned(&tx));
             let signature = sign_with_local_shares([&share_a, &share_c], &signing_hash).await?;
             let (raw, tx_hash) = encode_signed(tx, signature);

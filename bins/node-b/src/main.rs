@@ -16,7 +16,7 @@ use std::sync::Arc;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use mw_audit::{AuditLog, JsonlSink};
-use mw_chain::JsonRpcClient;
+use mw_chain::{JsonRpcClient, Network};
 use mw_judge::{OpenAiClient, OpenAiConfig};
 use mw_node_b::{
     Components, DEFAULT_ORIGIN, DEFAULT_RP_ID, JudgeNode, NodeConfig, SystemClock,
@@ -45,8 +45,6 @@ use secrecy::SecretString;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 
-/// Base Sepolia
-const CHAIN_ID: u64 = 84532;
 const DEFAULT_MODEL: &str = "gpt-5.5-2026-04-23";
 
 #[derive(Parser)]
@@ -108,6 +106,9 @@ enum Command {
         /// Create the TLS certificate inside the enclave and prove it with attestation (for Nitro Enclaves)
         #[arg(long)]
         enclave_tls: bool,
+        /// The chain to judge and send on (`base-sepolia` or `base`). `base` moves real funds
+        #[arg(long, env = "MW_CHAIN", default_value_t = Network::BaseSepolia)]
+        chain: Network,
     },
 }
 
@@ -276,6 +277,7 @@ async fn serve(
     passkey_rps: Vec<RelyingParty>,
     seal: &SealArgs,
     enclave_tls: bool,
+    network: Network,
 ) -> anyhow::Result<()> {
     let storage = storage(data_dir, seal)?;
     let signer = CggmpSigner::<Stream>::default();
@@ -285,11 +287,8 @@ async fn serve(
         busy: tokio::sync::Mutex::new(()),
     });
 
-    let rpc_url = SecretString::from(format!(
-        "https://base-sepolia.g.alchemy.com/v2/{}",
-        env_var("ALCHEMY_API_KEY")?
-    ));
-    let chain = JsonRpcClient::connect(rpc_url, CHAIN_ID).await?;
+    let rpc_url = SecretString::from(network.alchemy_url(&env_var("ALCHEMY_API_KEY")?));
+    let chain = JsonRpcClient::connect(rpc_url, network.chain_id()).await?;
     let simulator = TenderlySimulator::new(TenderlyConfig::new(
         env_var("TENDERLY_ACCOUNT_SLUG")?,
         env_var("TENDERLY_PROJECT_SLUG")?,
@@ -305,7 +304,7 @@ async fn serve(
     let node = Arc::new(JudgeNode::new(
         NodeConfig {
             passkey_rps,
-            ..NodeConfig::new(CHAIN_ID)
+            ..NodeConfig::new(network.chain_id())
         },
         Components {
             chain,
@@ -323,8 +322,10 @@ async fn serve(
     let (acceptor, attestation) = tls_setup(tls_dir, enclave_tls)?;
     let listener = RawListener::bind(&listen).await?;
     eprintln!(
-        "judge node for {} wallet(s) {wallets:?} on chain {CHAIN_ID}, listening on {listen}",
-        wallets.len()
+        "judge node for {} wallet(s) {wallets:?} on {} (chain {}), listening on {listen}",
+        wallets.len(),
+        network.name(),
+        network.chain_id()
     );
     loop {
         let (tcp, peer) = listener.accept().await?;
@@ -396,6 +397,7 @@ async fn main() -> anyhow::Result<()> {
             passkey_rps,
             seal,
             enclave_tls,
-        } => serve(listen, &tls_dir, &data_dir, passkey_rps, &seal, enclave_tls).await,
+            chain,
+        } => serve(listen, &tls_dir, &data_dir, passkey_rps, &seal, enclave_tls, chain).await,
     }
 }

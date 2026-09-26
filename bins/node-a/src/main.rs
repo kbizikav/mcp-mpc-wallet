@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use mw_chain::JsonRpcClient;
+use mw_chain::{JsonRpcClient, Network};
 use mw_core::{AgentOutcome, Proposal, UntrustedText};
 use mw_mpc::protocol::address_of;
 use mw_node_a::mcp::{ProposeParams, WalletConfig, WalletServer};
@@ -24,9 +24,6 @@ use mw_node_a::txbuild::{TxParams, build, encode_unsigned};
 
 use rmcp::ServiceExt;
 use secrecy::SecretString;
-
-/// Base Sepolia
-const CHAIN_ID: u64 = 84532;
 
 #[derive(Parser)]
 #[command(name = "mw-node-a", about = "MCP MPC wallet signing node (A)")]
@@ -47,6 +44,9 @@ struct Conn {
     /// When B runs in a Nitro Enclave, the expected image PCR0 (hex). If set, the attestation is verified
     #[arg(long)]
     expected_pcr0: Option<String>,
+    /// The chain (`base-sepolia` or `base`). Must match judge node B
+    #[arg(long, env = "MW_CHAIN", default_value_t = Network::BaseSepolia)]
+    chain: Network,
 }
 
 #[derive(Subcommand)]
@@ -106,21 +106,21 @@ fn endpoint(conn: &Conn) -> anyhow::Result<BEndpoint> {
     )?)
 }
 
-async fn rpc() -> anyhow::Result<JsonRpcClient> {
+async fn rpc(network: Network) -> anyhow::Result<JsonRpcClient> {
     let key = std::env::var("ALCHEMY_API_KEY").context("ALCHEMY_API_KEY is not set")?;
-    let url = SecretString::from(format!("https://base-sepolia.g.alchemy.com/v2/{key}"));
-    Ok(JsonRpcClient::connect(url, CHAIN_ID).await?)
+    let url = SecretString::from(network.alchemy_url(&key));
+    Ok(JsonRpcClient::connect(url, network.chain_id()).await?)
 }
 
 async fn wallet_config(conn: &Conn) -> anyhow::Result<WalletConfig> {
     let share_a = load_share_a(&conn.data_dir)?;
     let address = address_of(&share_a.shared_public_key);
     Ok(WalletConfig {
-        chain_id: CHAIN_ID,
+        chain_id: conn.chain.chain_id(),
         node_b: endpoint(conn)?,
         share_a,
         address,
-        rpc: rpc().await?,
+        rpc: rpc(conn.chain).await?,
     })
 }
 
@@ -172,10 +172,10 @@ async fn run_propose(conn: &Conn, params: ProposeParams, wait: bool) -> anyhow::
         },
         gas_limit: None,
     };
-    let tx = build(&config.rpc, CHAIN_ID, config.address, tx_params).await?;
+    let tx = build(&config.rpc, config.chain_id, config.address, tx_params).await?;
     let proposal = Proposal {
         wallet: config.address,
-        chain_id: CHAIN_ID,
+        chain_id: config.chain_id,
         unsigned_tx: encode_unsigned(&tx),
         agent_note: UntrustedText::new(params.note),
     };
